@@ -1,0 +1,6 @@
+# Same line endings on macOS and Windows (LF inside the repo and in containers)
+* text=auto eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.png binary
+*.jpg binary

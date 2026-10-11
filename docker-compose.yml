@@ -1,0 +1,6 @@
+# Step 1: only checks that Docker works on this computer.
+# Real services (MLflow, API, Nginx, PostgreSQL, Grafana) are added step by step.
+services:
+  hello:
+    image: python:3.12-slim
+    command: ["python", "-c", "print('SkySat: Docker ortami hazir')"]

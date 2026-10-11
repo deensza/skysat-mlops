@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Data (downloaded from Kaggle, not committed: size + license)
+data/*
+!data/.gitkeep
+!data/README.md
+
+# MLflow local artifacts
+mlruns/
+mlartifacts/
+
+# Environment / secrets
+.env
+kaggle.json
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
