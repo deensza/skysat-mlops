@@ -11,6 +11,10 @@ data/*
 !data/.gitkeep
 !data/README.md
 
+# Safety net: tabular data anywhere in the repo (competition data must not be redistributed)
+*.csv
+*.parquet
+
 # MLflow local artifacts
 mlruns/
 mlartifacts/

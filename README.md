@@ -12,6 +12,15 @@ scaling & load testing (Nginx, k6) → monitoring (PostgreSQL, Grafana) → drif
 Dataset: [Airline Passenger Satisfaction](https://www.kaggle.com/datasets/teejmahal20/airline-passenger-satisfaction)
 (the original data behind Kaggle Playground Series S6E10, *Predicting Airline Satisfaction*).
 
+## Data and licence
+
+- **Competition data:** [Playground Series – Season 6, Episode 10: Predicting Airline Satisfaction](https://www.kaggle.com/competitions/playground-series-s6e10),
+  sponsored by Google LLC and hosted by Kaggle. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+- **Original dataset:** linked above; see its Kaggle page for its own licence.
+- The competition rules forbid redistributing the data, so it is **never committed, copied into Docker images, or used in CI**.
+  Download it yourself into `data/` (see [data/README.md](data/README.md)); tests use small synthetic data instead.
+- Code for this competition stays inside the team; this repository is kept private while the competition is running.
+
 ## Project structure
 
 | Folder | Purpose |

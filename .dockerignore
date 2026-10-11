@@ -1,0 +1,18 @@
+# Competition data must never end up inside an image (Kaggle rules, section 2.4.b).
+# Mount data/ as a volume at run time instead.
+data/
+
+# Local artifacts and secrets
+mlruns/
+mlartifacts/
+.env
+kaggle.json
+
+# Python / VCS noise
+.git/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
