@@ -39,11 +39,13 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT model_version AS \"version\" FROM predictions ORDER BY created_at DESC LIMIT 1"
+          "rawSql": "SELECT model_version::int AS \"version\" FROM predictions ORDER BY created_at DESC LIMIT 1"
         }
       ],
       "fieldConfig": {
-        "defaults": {},
+        "defaults": {
+          "decimals": 0
+        },
         "overrides": []
       },
       "options": {
@@ -54,7 +56,7 @@
           "fields": "",
           "values": false
         },
-        "colorMode": "value",
+        "colorMode": "none",
         "graphMode": "none",
         "textMode": "value"
       }
@@ -99,7 +101,7 @@
           "fields": "",
           "values": false
         },
-        "colorMode": "value",
+        "colorMode": "none",
         "graphMode": "none",
         "textMode": "value"
       }
@@ -147,7 +149,7 @@
           "fields": "",
           "values": false
         },
-        "colorMode": "value",
+        "colorMode": "none",
         "graphMode": "none",
         "textMode": "value"
       }
@@ -195,7 +197,7 @@
           "fields": "",
           "values": false
         },
-        "colorMode": "value",
+        "colorMode": "none",
         "graphMode": "none",
         "textMode": "value"
       }
@@ -242,7 +244,7 @@
           "fields": "",
           "values": false
         },
-        "colorMode": "value",
+        "colorMode": "none",
         "graphMode": "none",
         "textMode": "value"
       }
@@ -272,7 +274,7 @@
           "format": "time_series",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT $__timeGroupAlias(created_at, '30s'), replica AS metric, count(*) AS value\nFROM predictions WHERE $__timeFilter(created_at) GROUP BY 1, 2 ORDER BY 1"
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '30s', 0), replica AS metric, count(*) AS value\nFROM predictions WHERE $__timeFilter(created_at) GROUP BY 1, 2 ORDER BY 1"
         }
       ],
       "fieldConfig": {
@@ -281,7 +283,8 @@
             "lineWidth": 2,
             "fillOpacity": 10,
             "showPoints": "never",
-            "spanNulls": true
+            "spanNulls": false,
+            "insertNulls": 60000
           }
         },
         "overrides": []
@@ -321,7 +324,7 @@
           "format": "time_series",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT $__timeGroupAlias(created_at, '30s'),\n  percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS \"p50\",\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS \"p95\"\nFROM predictions WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '30s', NULL),\n  percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS \"p50\",\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS \"p95\"\nFROM predictions WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
         }
       ],
       "fieldConfig": {
@@ -331,7 +334,8 @@
             "lineWidth": 2,
             "fillOpacity": 10,
             "showPoints": "never",
-            "spanNulls": true
+            "spanNulls": false,
+            "insertNulls": 60000
           }
         },
         "overrides": []
@@ -371,7 +375,7 @@
           "format": "time_series",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT $__timeGroupAlias(created_at, '30s'), avg((predicted = actual)::int) AS \"accuracy\"\nFROM predictions WHERE actual IS NOT NULL AND $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '30s', NULL), avg((predicted = actual)::int) AS \"accuracy\"\nFROM predictions WHERE actual IS NOT NULL AND $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
         },
         {
           "refId": "B",
@@ -387,7 +391,6 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
           "min": 0.8,
           "max": 1,
           "decimals": 3,
@@ -395,7 +398,8 @@
             "lineWidth": 2,
             "fillOpacity": 10,
             "showPoints": "never",
-            "spanNulls": true
+            "spanNulls": false,
+            "insertNulls": 60000
           }
         },
         "overrides": []
@@ -435,7 +439,7 @@
           "format": "time_series",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT $__timeGroupAlias(created_at, '30s'), avg(predicted) AS \"predicted\", avg(actual) AS \"real\"\nFROM predictions WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '30s', NULL), avg(predicted) AS \"predicted\", avg(actual) AS \"real\"\nFROM predictions WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
         }
       ],
       "fieldConfig": {
@@ -447,7 +451,8 @@
             "lineWidth": 2,
             "fillOpacity": 10,
             "showPoints": "never",
-            "spanNulls": true
+            "spanNulls": false,
+            "insertNulls": 60000
           }
         },
         "overrides": []
@@ -487,7 +492,7 @@
           "format": "time_series",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT $__timeGroupAlias(created_at, '30s'), max(model_version::int) AS \"version\"\nFROM predictions WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '30s', NULL), max(model_version::int) AS \"version\"\nFROM predictions WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
         }
       ],
       "fieldConfig": {
@@ -497,7 +502,8 @@
             "lineWidth": 2,
             "fillOpacity": 10,
             "showPoints": "never",
-            "spanNulls": true,
+            "spanNulls": false,
+            "insertNulls": 60000,
             "drawStyle": "line",
             "lineInterpolation": "stepAfter"
           }
