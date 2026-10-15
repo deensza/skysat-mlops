@@ -34,10 +34,53 @@ Dataset: [Airline Passenger Satisfaction](https://www.kaggle.com/datasets/teejma
 | `tests/` | Automated tests (pytest) |
 | `.github/workflows/` | CI/CD pipeline (GitHub Actions) |
 
+## Setup
+
+Requirements: Git, Docker Desktop, Python 3.12.
+
+```bash
+# macOS / Linux
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+```powershell
+# Windows (PowerShell)
+py -3.12 -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+Then download the dataset as described in [data/README.md](data/README.md).
+
+## Step 2 – Data preparation and traffic simulator
+
+```bash
+# clean the data and split it: processed/train.csv, validation.csv, live.csv
+python -m training.prepare_data
+
+# see how the "winter storm" drift changes the passengers
+python -m simulator.simulate compare --n 5000
+
+# write passengers to a CSV (normal or drift mode)
+python -m simulator.simulate generate --mode normal --n 2000
+python -m simulator.simulate generate --mode drift  --n 2000
+
+# later (step 4+): send passengers to the API instead of a file
+python -m simulator.simulate generate --mode drift --n 500 --url http://localhost:8080/predict
+```
+
+- `data/train.csv` is split 80/20 (stratified) into **train** and **validation**.
+- `data/test.csv` becomes **live** traffic: the model never sees these passengers during training.
+- **Drift mode – winter storm:** 60% of passengers get an extra 30–180 min delay, and 7 ratings that depend on
+  the airport, the schedule and the online systems drop by 2 stars (never below 1; 0 = not rated stays 0).
+  The labels do not change, so a model trained before the storm becomes less accurate until it is retrained.
+
 ## Status
 
 - [x] Step 1 – Environment and repository skeleton
-- [ ] Step 2 – Data preparation and traffic simulator
+- [x] Step 2 – Data preparation and traffic simulator
 - [ ] Step 3 – Model training and MLflow
 - [ ] Step 4 – Prediction API
 - [ ] Step 5 – Scaling and load test
