@@ -54,7 +54,9 @@ def current_champion_auc(client: MlflowClient) -> float | None:
     return client.get_run(champion.run_id).data.metrics.get("roc_auc")
 
 
-def register(client: MlflowClient, run, roc_auc: float) -> None:
+def register(client: MlflowClient, run, roc_auc: float, champion_auc: float | None = None) -> None:
+    """Quality gate. champion_auc: the champion's score on the same data as roc_auc (retraining);
+    if not given, the champion's own validation roc_auc from its MLflow run is used."""
     if roc_auc < ROC_AUC_THRESHOLD:
         print(f"Not registered: roc_auc {roc_auc:.4f} < threshold {ROC_AUC_THRESHOLD}")
         return
@@ -68,7 +70,8 @@ def register(client: MlflowClient, run, roc_auc: float) -> None:
     )
     print(f"Registered {MODEL_NAME} version {version.version}")
 
-    champion_auc = current_champion_auc(client)
+    if champion_auc is None:
+        champion_auc = current_champion_auc(client)
     if champion_auc is None or roc_auc > champion_auc:
         client.set_registered_model_alias(MODEL_NAME, ALIAS, version.version)
         before = "none" if champion_auc is None else f"{champion_auc:.4f}"
