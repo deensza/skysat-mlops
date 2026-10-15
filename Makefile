@@ -13,7 +13,7 @@ PYTHON ?= python3.12
 # Use the project's .venv when it exists, else whatever python3 is on the PATH
 PY := $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 
-.PHONY: help install install-train data train test compose-check ci kaggle-train
+.PHONY: help install install-train data train compare test compose-check ci kaggle-train
 
 help:
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/'
@@ -30,6 +30,9 @@ data: ## step 2: clean and split data/train.csv + test.csv into data/processed/
 
 train: ## step 3a: train on data/processed, write artifacts/model.pt
 	$(PY) -m training.train
+
+compare: ## compare the MLP with logistic regression and gradient boosting (3 seeds)
+	$(PY) -m training.compare
 
 test: ## run pytest
 	$(PY) -m pytest -v
