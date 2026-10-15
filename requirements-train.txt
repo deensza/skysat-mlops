@@ -1,0 +1,5 @@
+# Extra packages for training (step 3). Not needed by the tests that run in CI today.
+# Linux without a GPU can save ~2 GB with the CPU build:
+#   pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+-r requirements.txt
+torch==2.14.1

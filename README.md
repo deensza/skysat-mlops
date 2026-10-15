@@ -34,18 +34,19 @@ Dataset: [Airline Passenger Satisfaction](https://www.kaggle.com/datasets/teejma
 | `tests/` | Automated tests (pytest) |
 | `.github/workflows/` | CI/CD pipeline (GitHub Actions) |
 
-## Training on Kaggle
+## Training on Kaggle (competition track)
 
-The model is a PyTorch MLP ([training/train_torch.py](training/train_torch.py), adapted data handling from
+A separate, optional track for the Kaggle leaderboard. It uses the competition files, not the project pipeline below.
+The model is a PyTorch MLP ([training/train_torch.py](training/train_torch.py)).
 One-time: `pip install kaggle`, add your Kaggle API credentials, join the competition and accept its rules.
 
 ```bash
 export KAGGLE_USERNAME=<your kaggle username>
-make kaggle-train   # pushes a private notebook, waits for it, downloads artifacts/model.pt + submission.csv
+make kaggle-train   # pushes a private notebook, waits for it, downloads artifacts/kaggle/model.pt + submission.csv
 ```
 
-`model.pt` is a single file (weights + preprocessing), loaded with `load_bundle()` and `predict_proba()` from the same script.
 The competition data stays on Kaggle; the notebook is private.
+
 ## Setup
 
 Requirements: Git, Docker Desktop, Python 3.12.
@@ -88,6 +89,20 @@ python -m simulator.simulate generate --mode drift --n 500 --url http://localhos
 - **Drift mode – winter storm:** 60% of passengers get an extra 30–180 min delay, and 7 ratings that depend on
   the airport, the schedule and the online systems drop by 2 stars (never below 1; 0 = not rated stays 0).
   The labels do not change, so a model trained before the storm becomes less accurate until it is retrained.
+
+## Step 3a – Training
+
+```bash
+make install         # once: .venv with the pinned packages (Python 3.12)
+make install-train   # once: adds PyTorch
+make data            # step 2: clean + split (needs data/train.csv and test.csv)
+make train           # trains on data/processed/train.csv, evaluates on validation.csv
+```
+
+Writes `artifacts/model.pt` (gitignored) and prints validation AUC, precision, recall, F1 and the majority-class baseline.
+`model.pt` is one file: network weights plus the preprocessing settings. The API will load it with `load_bundle()` and
+`predict_proba()` from [training/train.py](training/train.py), the same code that trained it.
+Step 3b (MLflow) calls `run_training()` and logs / registers the result. `make help` lists all shortcuts; `make ci` runs the CI checks locally.
 
 ## Status
 
