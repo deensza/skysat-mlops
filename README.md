@@ -34,6 +34,20 @@ Dataset: [Airline Passenger Satisfaction](https://www.kaggle.com/datasets/teejma
 | `tests/` | Automated tests (pytest) |
 | `.github/workflows/` | CI/CD pipeline (GitHub Actions) |
 
+## Training on Kaggle
+
+The model is a PyTorch MLP ([training/train_torch.py](training/train_torch.py), adapted data handling from
+[Ali Hassan's Apache 2.0 baseline](https://www.kaggle.com/code/alikalwar/airline-satisfaction-lightgbm-baseline-auc-0-9578)).
+One-time: `pip install kaggle`, add your Kaggle API credentials, join the competition and accept its rules.
+
+```bash
+export KAGGLE_USERNAME=<your kaggle username>
+make kaggle-train   # pushes a private notebook, waits for it, downloads artifacts/model.pt + submission.csv
+```
+
+`model.pt` is a single file (weights + preprocessing), loaded with `load_bundle()` and `predict_proba()` from the same script.
+The competition data stays on Kaggle; the notebook is private.
+
 ## Status
 
 - [x] Step 1 – Environment and repository skeleton
