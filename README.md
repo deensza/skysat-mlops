@@ -160,6 +160,26 @@ Measured on a MacBook Pro M1 (Docker Desktop, 10 CPUs), 50 virtual users, 30 s:
 Lesson learned: `docker compose run k6` without `--no-deps` restarts the API with `replicas: 3`, so a "1 copy" test
 silently ran with 3 copies and showed no difference.
 
+## Step 6 – Prediction logging and monitoring
+
+```bash
+docker compose up -d --build        # adds PostgreSQL and Grafana
+python -m simulator.simulate generate --mode normal --n 2000 --url http://localhost:8080/predict
+open http://localhost:3000          # Grafana dashboard "SkySat – model in production" (no login needed)
+```
+
+- Every `POST /predict` is written to PostgreSQL (table `predictions`, [monitoring/init.sql](monitoring/init.sql)):
+  the 22 inputs, probability, prediction, model version, which API copy answered, and the time it took.
+- The simulator then sends the passenger's real answer (the survey result) to `POST /feedback`, which fills in
+  `actual`. This is how the model's accuracy can be measured in production.
+- If the database is down, the API still answers; it only logs a warning (monitoring must not break serving).
+- Grafana reads PostgreSQL directly (no Prometheus). The dashboard is in the repo
+  ([monitoring/grafana/dashboards/skysat.json](monitoring/grafana/dashboards/skysat.json)) and loads automatically:
+  serving model version, number of predictions, accuracy and ROC AUC (overall and over time), requests per API copy,
+  latency p50/p95, predicted vs real satisfied share, model version over time.
+- ROC AUC is computed in SQL from ranks (Mann–Whitney) with average ranks for ties; checked against scikit-learn
+  on the same rows (0.995575 both).
+
 ## Status
 
 - [x] Step 1 – Environment and repository skeleton
@@ -167,7 +187,7 @@ silently ran with 3 copies and showed no difference.
 - [x] Step 3 – Model training and MLflow
 - [x] Step 4 – Prediction API
 - [x] Step 5 – Scaling and load test
-- [ ] Step 6 – Prediction logging and monitoring
+- [x] Step 6 – Prediction logging and monitoring
 - [ ] Step 7 – Drift detection and retraining
 - [ ] Step 8 – CI/CD
 - [ ] Step 9 – Demo scenario and documentation

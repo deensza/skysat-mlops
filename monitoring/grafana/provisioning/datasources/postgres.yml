@@ -1,0 +1,17 @@
+# Grafana reads the prediction log straight from PostgreSQL (no Prometheus).
+apiVersion: 1
+
+datasources:
+  - name: SkySat PostgreSQL
+    uid: skysat-pg
+    type: grafana-postgresql-datasource
+    url: postgres:5432
+    user: skysat
+    isDefault: true
+    jsonData:
+      database: skysat
+      sslmode: disable
+      postgresVersion: 1700
+      timescaledb: false
+    secureJsonData:
+      password: $POSTGRES_PASSWORD

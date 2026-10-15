@@ -26,10 +26,14 @@ services:
       dockerfile: api/Dockerfile
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
+      DATABASE_URL: postgresql://skysat:${POSTGRES_PASSWORD:-skysat}@postgres:5432/skysat
     deploy:
       replicas: 3
     depends_on:
-      - mlflow
+      mlflow:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 5s
@@ -57,5 +61,43 @@ services:
     depends_on:
       - nginx
 
+  # Prediction log (step 6). Port 5432 is published for training/retrain.py on the host.
+  postgres:
+    image: postgres:17.11-alpine
+    environment:
+      POSTGRES_USER: skysat
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-skysat}
+      POSTGRES_DB: skysat
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./monitoring/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U skysat -d skysat"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Dashboards (step 6): http://localhost:3000 (opens without login, read-only; admin / admin to edit)
+  grafana:
+    image: grafana/grafana:12.4.13
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-skysat}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/skysat.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   mlflow-data:
+  postgres-data:
