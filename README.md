@@ -104,6 +104,21 @@ Writes `artifacts/model.pt` (gitignored) and prints validation AUC, precision, r
 `predict_proba()` from [training/train.py](training/train.py), the same code that trained it.
 Step 3b (MLflow) calls `run_training()` and logs / registers the result. `make help` lists all shortcuts; `make ci` runs the CI checks locally.
 
+## Step 3b – MLflow tracking and model registry
+
+```bash
+docker compose up -d mlflow     # UI: http://localhost:5050 (5000 is taken by AirPlay on macOS)
+python -m training.track        # train + log to MLflow + register (needs make data and make install-train)
+python -m training.track --stub --stub-auc 0.97   # fake training: tries the registry without data or PyTorch
+```
+
+- Each run logs the parameters, validation metrics, tags (`git_commit`, `purpose=training`) and `model/model.pt`.
+- **Quality gate:** a model is registered as `skysat-satisfaction` only if validation **ROC AUC ≥ 0.95**
+  (the LightGBM baseline reaches ~0.958).
+- The `champion` alias moves to the new version only if its ROC AUC is higher than the current champion's.
+  The API (step 4) loads `models:/skysat-satisfaction@champion`, so a better model goes live without a code change.
+- Runs and models are kept in the `mlflow-data` Docker volume. `docker compose down -v` deletes them.
+
 ## Status
 
 - [x] Step 1 – Environment and repository skeleton
