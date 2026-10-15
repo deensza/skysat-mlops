@@ -49,7 +49,7 @@ services:
       - "8080:80"
     depends_on:
       api:
-        condition: service_healthy
+        condition: service_started  # not healthy: on a fresh start there is no champion yet (API answers 503)
 
   # Load test (step 5), only on demand: docker compose --profile loadtest run --rm --no-deps k6
   k6:

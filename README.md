@@ -131,6 +131,8 @@ curl localhost:8080/model          # serving version + its validation metrics
 - FastAPI service in [api/main.py](api/main.py): `POST /predict`, `GET /health`, `GET /model`.
 - The request body is generated from [skysat/schema.py](skysat/schema.py): unknown categories, ratings outside 0–5,
   missing fields or an extra `satisfied` label are rejected with 422.
+- On a fresh start (`docker compose down -v`) there is no model yet: `/health` and `/predict` answer 503 until
+  `python -m training.track` registers a champion; the API copies then load it by themselves.
 - The model is **not** inside the image. At start the API downloads `skysat-satisfaction@champion` from MLflow and
   checks the alias every 10 s; a new champion is swapped in while requests keep being served.
   If MLflow is down, the API keeps serving the model it already has.
