@@ -1,0 +1,9 @@
+# Loads every dashboard JSON in monitoring/grafana/dashboards/ at start.
+apiVersion: 1
+
+providers:
+  - name: SkySat
+    folder: ""
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

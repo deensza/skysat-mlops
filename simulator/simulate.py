@@ -52,15 +52,26 @@ def to_request(row: pd.Series) -> dict:
     return body
 
 
-def send(batch: pd.DataFrame, url: str, rate: float) -> None:
+def post_json(url: str, body: dict) -> dict:
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.load(resp)
+
+
+def send(batch: pd.DataFrame, url: str, rate: float, feedback: bool = True) -> None:
+    """POST each passenger to the API. With feedback, the passenger's real answer (the survey
+    result, which the model never sees) is then sent to /feedback for that prediction (step 6)."""
+    feedback_url = url.rsplit("/", 1)[0] + "/feedback"
     ok = failed = 0
     started = time.perf_counter()
     for _, row in batch.iterrows():
-        data = json.dumps(to_request(row)).encode("utf-8")
-        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                ok += 200 <= resp.status < 300
+            answer = post_json(url, to_request(row))
+            if feedback:
+                post_json(feedback_url, {"prediction_id": answer["prediction_id"],
+                                         "satisfied": bool(row[schema.TARGET])})
+            ok += 1
         except (urllib.error.URLError, TimeoutError) as err:
             failed += 1
             if failed == 1:
@@ -86,7 +97,7 @@ def describe(batch: pd.DataFrame) -> dict:
 def cmd_generate(args):
     batch = make_batch(args.mode, args.n, args.seed, args.share)
     if args.url:
-        send(batch, args.url, args.rate)
+        send(batch, args.url, args.rate, feedback=not args.no_feedback)
     else:
         out = args.out or f"data/sim_{args.mode}.csv"
         batch.to_csv(out, index=False)
@@ -124,6 +135,7 @@ def main():
     gen.add_argument("--out", help="output CSV (default data/sim_<mode>.csv)")
     gen.add_argument("--url", help="send each passenger as a POST request to this URL instead of writing a file")
     gen.add_argument("--rate", type=float, default=0, help="requests per second when sending (0 = as fast as possible)")
+    gen.add_argument("--no-feedback", action="store_true", help="do not send the real answers to /feedback")
     gen.set_defaults(func=cmd_generate)
 
     cmp_ = sub.add_parser("compare", parents=[common], help="show how the drift changes the data")
