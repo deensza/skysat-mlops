@@ -18,15 +18,16 @@ services:
     volumes:
       - mlflow-data:/mlflow
 
-  # Prediction API (step 4). Swagger: http://localhost:8000/docs
+  # Prediction API (step 4), 3 copies behind Nginx (step 5). Not published directly:
+  # use http://localhost:8080 (Swagger: /docs). Change the number: docker compose up -d --scale api=1
   api:
     build:
       context: .
       dockerfile: api/Dockerfile
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
-    ports:
-      - "8000:8000"
+    deploy:
+      replicas: 3
     depends_on:
       - mlflow
     healthcheck:
@@ -34,6 +35,27 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
+
+  # Load balancer (step 5): http://localhost:8080
+  nginx:
+    image: nginx:1.30.6-alpine
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # Load test (step 5), only on demand: docker compose --profile loadtest run --rm --no-deps k6
+  k6:
+    image: grafana/k6:1.8.1
+    profiles: ["loadtest"]
+    volumes:
+      - ./loadtest:/scripts:ro
+    command: ["run", "/scripts/predict.js"]
+    depends_on:
+      - nginx
 
 volumes:
   mlflow-data:

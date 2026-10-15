@@ -31,6 +31,7 @@ Dataset: [Airline Passenger Satisfaction](https://www.kaggle.com/datasets/teejma
 | `api/` | FastAPI prediction service |
 | `monitoring/` | Grafana dashboards and database setup |
 | `loadtest/` | k6 load test scripts |
+| `nginx/` | Load balancer configuration |
 | `tests/` | Automated tests (pytest) |
 | `.github/workflows/` | CI/CD pipeline (GitHub Actions) |
 
@@ -122,9 +123,9 @@ python -m training.track --stub --stub-auc 0.97   # fake training: tries the reg
 ## Step 4 – Prediction API
 
 ```bash
-docker compose up -d --build api   # also starts MLflow; Swagger: http://localhost:8000/docs
-curl localhost:8000/health         # {"status":"ok","model_version":"1",...}
-curl localhost:8000/model          # serving version + its validation metrics
+docker compose up -d --build       # MLflow + API (+ Nginx from step 5); Swagger: http://localhost:8080/docs
+curl localhost:8080/health         # {"status":"ok","model_version":"1",...}
+curl localhost:8080/model          # serving version + its validation metrics
 ```
 
 - FastAPI service in [api/main.py](api/main.py): `POST /predict`, `GET /health`, `GET /model`.
@@ -135,13 +136,37 @@ curl localhost:8000/model          # serving version + its validation metrics
   If MLflow is down, the API keeps serving the model it already has.
 - Preprocessing comes from the same `training/train.py` that trained the model (no training/serving skew).
 
+## Step 5 – Scaling and load test
+
+```bash
+docker compose up -d --build                     # MLflow + 3 API copies + Nginx on http://localhost:8080
+docker compose --profile loadtest run --rm --no-deps k6     # k6: 50 users for 30 s against POST /predict
+docker compose up -d --scale api=1 --no-recreate            # try with 1 copy, then --scale api=3 again
+```
+
+- [nginx/nginx.conf](nginx/nginx.conf) spreads requests round-robin over the copies (`X-Upstream` response header
+  shows which one answered) and re-reads Docker's DNS, so scaling up or down needs no Nginx restart.
+- [loadtest/predict.js](loadtest/predict.js) sends random but valid passengers (no dataset rows); it fails if more
+  than 1% of requests fail or p95 latency is above 500 ms.
+- Each API copy uses one PyTorch thread, so more copies = more CPU used in parallel.
+
+Measured on a MacBook Pro M1 (Docker Desktop, 10 CPUs), 50 virtual users, 30 s:
+
+| API copies | Requests/s | Avg latency | p95 latency | Errors |
+|---|---|---|---|---|
+| 1 | 356 | 140 ms | 182 ms | 0 |
+| 3 | 856 (2.4×) | 58 ms | 137 ms | 0 |
+
+Lesson learned: `docker compose run k6` without `--no-deps` restarts the API with `replicas: 3`, so a "1 copy" test
+silently ran with 3 copies and showed no difference.
+
 ## Status
 
 - [x] Step 1 – Environment and repository skeleton
 - [x] Step 2 – Data preparation and traffic simulator
 - [x] Step 3 – Model training and MLflow
 - [x] Step 4 – Prediction API
-- [ ] Step 5 – Scaling and load test
+- [x] Step 5 – Scaling and load test
 - [ ] Step 6 – Prediction logging and monitoring
 - [ ] Step 7 – Drift detection and retraining
 - [ ] Step 8 – CI/CD
