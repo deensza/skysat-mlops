@@ -37,7 +37,6 @@ Dataset: [Airline Passenger Satisfaction](https://www.kaggle.com/datasets/teejma
 ## Training on Kaggle
 
 The model is a PyTorch MLP ([training/train_torch.py](training/train_torch.py), adapted data handling from
-[Ali Hassan's Apache 2.0 baseline](https://www.kaggle.com/code/alikalwar/airline-satisfaction-lightgbm-baseline-auc-0-9578)).
 One-time: `pip install kaggle`, add your Kaggle API credentials, join the competition and accept its rules.
 
 ```bash
@@ -47,11 +46,53 @@ make kaggle-train   # pushes a private notebook, waits for it, downloads artifac
 
 `model.pt` is a single file (weights + preprocessing), loaded with `load_bundle()` and `predict_proba()` from the same script.
 The competition data stays on Kaggle; the notebook is private.
+## Setup
+
+Requirements: Git, Docker Desktop, Python 3.12.
+
+```bash
+# macOS / Linux
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+```powershell
+# Windows (PowerShell)
+py -3.12 -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+Then download the dataset as described in [data/README.md](data/README.md).
+
+## Step 2 – Data preparation and traffic simulator
+
+```bash
+# clean the data and split it: processed/train.csv, validation.csv, live.csv
+python -m training.prepare_data
+
+# see how the "winter storm" drift changes the passengers
+python -m simulator.simulate compare --n 5000
+
+# write passengers to a CSV (normal or drift mode)
+python -m simulator.simulate generate --mode normal --n 2000
+python -m simulator.simulate generate --mode drift  --n 2000
+
+# later (step 4+): send passengers to the API instead of a file
+python -m simulator.simulate generate --mode drift --n 500 --url http://localhost:8080/predict
+```
+
+- `data/train.csv` is split 80/20 (stratified) into **train** and **validation**.
+- `data/test.csv` becomes **live** traffic: the model never sees these passengers during training.
+- **Drift mode – winter storm:** 60% of passengers get an extra 30–180 min delay, and 7 ratings that depend on
+  the airport, the schedule and the online systems drop by 2 stars (never below 1; 0 = not rated stays 0).
+  The labels do not change, so a model trained before the storm becomes less accurate until it is retrained.
 
 ## Status
 
 - [x] Step 1 – Environment and repository skeleton
-- [ ] Step 2 – Data preparation and traffic simulator
+- [x] Step 2 – Data preparation and traffic simulator
 - [ ] Step 3 – Model training and MLflow
 - [ ] Step 4 – Prediction API
 - [ ] Step 5 – Scaling and load test

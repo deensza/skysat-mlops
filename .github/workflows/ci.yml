@@ -1,0 +1,31 @@
+# Continuous integration: runs on every push and pull request to main.
+# The Kaggle dataset is not in the repository, so the tests use a small fake dataset.
+# Later steps add jobs for training on a small sample, the quality gate and the Docker build (step 8).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest==8.3.3
+
+      - name: Run tests
+        run: python -m pytest -v
+
+      - name: Check docker-compose.yml
+        run: docker compose config --quiet
