@@ -119,12 +119,28 @@ python -m training.track --stub --stub-auc 0.97   # fake training: tries the reg
   The API (step 4) loads `models:/skysat-satisfaction@champion`, so a better model goes live without a code change.
 - Runs and models are kept in the `mlflow-data` Docker volume. `docker compose down -v` deletes them.
 
+## Step 4 – Prediction API
+
+```bash
+docker compose up -d --build api   # also starts MLflow; Swagger: http://localhost:8000/docs
+curl localhost:8000/health         # {"status":"ok","model_version":"1",...}
+curl localhost:8000/model          # serving version + its validation metrics
+```
+
+- FastAPI service in [api/main.py](api/main.py): `POST /predict`, `GET /health`, `GET /model`.
+- The request body is generated from [skysat/schema.py](skysat/schema.py): unknown categories, ratings outside 0–5,
+  missing fields or an extra `satisfied` label are rejected with 422.
+- The model is **not** inside the image. At start the API downloads `skysat-satisfaction@champion` from MLflow and
+  checks the alias every 10 s; a new champion is swapped in while requests keep being served.
+  If MLflow is down, the API keeps serving the model it already has.
+- Preprocessing comes from the same `training/train.py` that trained the model (no training/serving skew).
+
 ## Status
 
 - [x] Step 1 – Environment and repository skeleton
 - [x] Step 2 – Data preparation and traffic simulator
-- [ ] Step 3 – Model training and MLflow
-- [ ] Step 4 – Prediction API
+- [x] Step 3 – Model training and MLflow
+- [x] Step 4 – Prediction API
 - [ ] Step 5 – Scaling and load test
 - [ ] Step 6 – Prediction logging and monitoring
 - [ ] Step 7 – Drift detection and retraining

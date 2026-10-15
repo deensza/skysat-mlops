@@ -12,10 +12,28 @@ services:
       mlflow server --host 0.0.0.0 --port 5000
       --backend-store-uri sqlite:////mlflow/mlflow.db
       --artifacts-destination /mlflow/artifacts
+      --allowed-hosts mlflow:5000,localhost:*,127.0.0.1:*
     ports:
       - "5050:5000"
     volumes:
       - mlflow-data:/mlflow
+
+  # Prediction API (step 4). Swagger: http://localhost:8000/docs
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mlflow
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
 
 volumes:
   mlflow-data:
