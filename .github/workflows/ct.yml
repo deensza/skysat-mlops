@@ -1,0 +1,71 @@
+# Continuous training (step 8). Runs ONLY on the team PC (self-hosted runner, label `skysat`), because the
+# Kaggle data may not be put on GitHub's servers. The data is mounted into the ct-worker container from
+# SKYSAT_DATA_DIR (set in the runner's .env file, see README step 8); it is never uploaded or logged.
+#   candidates  (re)start the CT worker with the current code and queue the 5 standard candidates.
+#               The worker trains them in the background; results: `make list-ct` and MLflow.
+#               - every Monday, by hand, and when training code lands on main
+#   drift       PSI drift check on the live predictions; retrain only if drift (training/retrain.py)
+#               - every day, and by hand
+# No pull_request trigger on purpose: a pull request must never run code on the team PC.
+name: CT
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # daily 03:00 UTC: drift check
+    - cron: "0 4 * * 1"   # Mondays 04:00 UTC: queue the 5 candidates
+  workflow_dispatch:
+    inputs:
+      job:
+        description: What to run
+        type: choice
+        options: [candidates, drift]
+        default: candidates
+  push:
+    branches: [main]
+    paths: ["training/**", "skysat/**"]
+
+permissions:
+  contents: read
+
+concurrency: team-pc
+
+env:
+  COMPOSE_PROJECT_NAME: skysat-mlops  # the same stack (and MLflow models) as `docker compose up` in the repo
+  GIT_COMMIT: ${{ github.sha }}
+
+jobs:
+  candidates:
+    if: github.event_name == 'push' || github.event.schedule == '0 4 * * 1' || inputs.job == 'candidates'
+    runs-on: [self-hosted, skysat]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the Kaggle data is on this machine
+        run: test -f "${SKYSAT_DATA_DIR:?set SKYSAT_DATA_DIR in the runner .env}/train.csv"
+
+      - name: Prepare the data (step 2)
+        run: |
+          make start-ct
+          docker compose --profile ct run --rm ct-worker python -m training.prepare_data
+
+      - name: Queue the 5 candidates
+        run: make add-ct ARGS=--all
+
+      - name: Queue so far
+        run: make list-ct
+
+  drift:
+    if: github.event.schedule == '0 3 * * *' || inputs.job == 'drift'
+    runs-on: [self-hosted, skysat]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the Kaggle data is on this machine
+        run: test -f "${SKYSAT_DATA_DIR:?set SKYSAT_DATA_DIR in the runner .env}/processed/train.csv"
+
+      - name: Drift check, retrain if needed
+        run: |
+          make start-ct
+          docker compose --profile ct run --rm ct-worker python -m training.retrain

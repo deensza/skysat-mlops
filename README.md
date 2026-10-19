@@ -19,13 +19,17 @@ Dataset: [Airline Passenger Satisfaction](https://www.kaggle.com/datasets/teejma
 - **Original dataset:** linked above; see its Kaggle page for its own licence.
 - The competition rules forbid redistributing the data, so it is **never committed, copied into Docker images, or used in CI**.
   Download it yourself into `data/` (see [data/README.md](data/README.md)); tests use small synthetic data instead.
-- Code for this competition stays inside the team; this repository is kept private while the competition is running.
+- This repository is public, which the rules allow: they forbid *private* sharing outside the team, not public sharing.
+  Code that is shared publicly must also be shared on the competition's Kaggle discussion forum or notebooks:
+  post a link to this repo in the competition's Discussion tab. The data and trained models are never in the repository.
+- Code: [MIT License](LICENSE) (an OSI-approved licence that allows commercial use, as the rules require for shared code).
 
 ## Project structure
 
 | Folder | Purpose |
 |---|---|
 | `data/` | Dataset files (downloaded, not committed) |
+| `docs/` | [Architecture](docs/architecture.md): how all the pieces fit together — start here |
 | `simulator/` | Sends passenger records to the API (normal and drift modes) |
 | `training/` | Training and retraining scripts, MLflow logging |
 | `api/` | FastAPI prediction service |
@@ -34,19 +38,6 @@ Dataset: [Airline Passenger Satisfaction](https://www.kaggle.com/datasets/teejma
 | `nginx/` | Load balancer configuration |
 | `tests/` | Automated tests (pytest) |
 | `.github/workflows/` | CI/CD pipeline (GitHub Actions) |
-
-## Training on Kaggle (competition track)
-
-A separate, optional track for the Kaggle leaderboard. It uses the competition files, not the project pipeline below.
-The model is a PyTorch MLP ([training/train_torch.py](training/train_torch.py)).
-One-time: `pip install kaggle`, add your Kaggle API credentials, join the competition and accept its rules.
-
-```bash
-export KAGGLE_USERNAME=<your kaggle username>
-make kaggle-train   # pushes a private notebook, waits for it, downloads artifacts/kaggle/model.pt + submission.csv
-```
-
-The competition data stays on Kaggle; the notebook is private.
 
 ## Setup
 
@@ -218,6 +209,78 @@ Measured end to end with `docker compose up` (3 API copies), 2,000 passengers pe
 - Use a different `--seed` for traffic after retraining: the same seed sends the same passengers the model has just
   been trained on, and the recovery would look better than it is.
 
+## Step 8 – CI/CD and continuous training (CT)
+
+The map of all the pieces is in [docs/architecture.md](docs/architecture.md). Three automated loops:
+
+| Loop | Workflow | Runs on | When | What |
+|---|---|---|---|---|
+| **CI** | `ci.yml` → `test`, `image` | GitHub's servers | every push / pull request | pytest on **fake data** (incl. training all 5 model types and the CT queue), compose check, API image build |
+| **CD** | `ci.yml` → `deploy` | team PC (self-hosted runner) | push to `main`, after CI | push image to `ghcr.io/<repo>-api`, pull it on the PC, `docker compose up -d`, smoke test |
+| **CT** | `ct.yml` → `candidates` | team PC | Mondays, by hand, new training code on `main` | (re)start the CT worker, queue the 5 candidates |
+| **CT** | `ct.yml` → `drift` | team PC | daily, by hand | step 7's drift check; retrains the champion's model type only if drift |
+
+**Why the team PC:** the competition rules forbid putting the Kaggle data on anyone else's servers, so training
+on real data runs where the data already is. The `ct-worker` container mounts `data/`; the data is never copied
+into an image, uploaded or logged.
+
+### CT = a background worker + a queue
+
+Training is its own service. Jobs wait in a queue (table `ct_jobs` in the PostgreSQL that already runs); the
+`ct-worker` container takes the oldest one (`SELECT … FOR UPDATE SKIP LOCKED`, so no job is trained twice),
+trains it, logs it to MLflow (`purpose=ct`, `ct_job`, `model_type`), applies the quality gate and makes it
+`champion` if it beats the current one. Anyone can add jobs: you, the CT workflow, a cron job.
+
+```bash
+make start-ct                                   # start the worker in the background (needs `make data`)
+make add-ct ARGS="--model random_forest"        # queue one model (mlp, logistic_regression, random_forest, gradient_boosting)
+make add-ct ARGS="--model mlp --rating-one-hot --epochs 30 --name mlp-30-epochs"
+make add-ct ARGS=--all                          # the 5 standard candidates
+make list-ct                                    # queued / running / done / failed, with ROC AUC and version
+docker compose --profile ct logs -f ct-worker   # watch it live
+make stop-ct                                    # stop; a job in progress goes back to the queue
+make smoke                                      # what CD checks after a deploy: /health + /predict via Nginx
+```
+
+The API serves scikit-learn models (`model.joblib`) as well as the MLP (`model.pt`); `GET /model` shows
+`model_type`. A failing job is marked `failed` with the reason and the worker carries on.
+
+Measured on the team PC (Linux, CPU only), `make add-ct ARGS=--all` on a fresh MLflow, original dataset
+(83,123 train / 20,781 validation rows):
+
+| Job | Model | Validation ROC AUC | Result |
+|---|---|---|---|
+| 1 | logistic_regression (one-hot ratings) | 0.9807 | version 1, champion |
+| 2 | random_forest | 0.9941 | version 2, champion |
+| 3 | gradient_boosting | 0.9952 | version 3, champion |
+| 4 | mlp | 0.9948 | version 4, champion stays |
+| 5 | mlp_rating_one_hot | 0.9955 | version 5, **champion** |
+
+- The top three are within 0.0007 of each other: about the size of the seed-to-seed noise measured earlier
+  (≤ 0.0005), so "best" here is partly luck.
+- Checked: stopping the worker mid-job puts the job back to `queued`, and it is trained after `make start-ct`;
+  a job with a bad parameter ends `failed` with the reason and the worker keeps running; `make add-ct` rejects
+  unknown model or feature names before they reach the queue.
+
+### One-time setup of the self-hosted runner (repo admin)
+
+1. **Protect the PC from strangers' pull requests first.** The repo is public, and GitHub warns that on a public
+   repo anyone can open a pull request whose (edited) workflow runs on a self-hosted runner. Our workflows never
+   use the PC for pull requests, but a pull request can change that, so: Settings → Actions → General →
+   *Fork pull request workflows from outside collaborators* → **Require approval for all external
+   contributors**, and never approve a run from someone outside the team.
+2. Settings → Actions → Runners → **New self-hosted runner** (Linux x64). Follow the commands, and when asked for
+   labels add `skysat`. Install it as a service (`sudo ./svc.sh install && sudo ./svc.sh start`) so it survives
+   reboots.
+3. In the runner folder, create `.env` with the absolute path of the Kaggle files, then restart the service:
+   ```
+   SKYSAT_DATA_DIR=/home/<you>/Projects/skysat-mlops/data
+   ```
+4. The runner user needs Docker (`docker ps` works without sudo).
+
+The runner shares the Docker Compose project `skysat-mlops` with your normal `docker compose up`, so CD and CT
+work on the same MLflow models and prediction log you see locally.
+
 ## Status
 
 - [x] Step 1 – Environment and repository skeleton
@@ -227,7 +290,7 @@ Measured end to end with `docker compose up` (3 API copies), 2,000 passengers pe
 - [x] Step 5 – Scaling and load test
 - [x] Step 6 – Prediction logging and monitoring
 - [x] Step 7 – Drift detection and retraining
-- [ ] Step 8 – CI/CD
+- [ ] Step 8 – CI/CD (code done; waiting for the self-hosted runner, see step 8)
 - [ ] Step 9 – Demo scenario and documentation
 - [ ] Step 10 – Presentation
 

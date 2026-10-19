@@ -4,26 +4,31 @@
 #   make install-train  one-time: add PyTorch for training
 #   make data           step 2: clean + split the Kaggle files in data/
 #   make train          step 3a: train the model -> artifacts/model.pt
+#   make compare        compare the MLP with logistic regression and gradient boosting
+#   make graph          plot which features drive satisfaction -> artifacts/eda/*.png
+#   make start-ct       step 8: start the CT worker in the background (trains every queued model)
+#   make add-ct ARGS=.. step 8: queue a model, e.g. ARGS="--model random_forest" or ARGS=--all (5 models)
+#   make list-ct        step 8: CT jobs and results;  make stop-ct: stop the worker
+#   make smoke          step 8: smoke-test the running stack (what CD runs after a deploy)
 #   make test           run the tests
 #   make ci             run the same checks as the GitHub Actions workflow
-#   make kaggle-train   train the competition model on Kaggle (separate leaderboard track)
 
-# Python 3.12 is what CI uses; override if yours is named differently: make install PYTHON=python3
-PYTHON ?= python3.12
+# Python 3.12 is what CI uses; override if needed: make install PYTHON=3.13
+PYTHON ?= 3.12
 # Use the project's .venv when it exists, else whatever python3 is on the PATH
 PY := $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 
-.PHONY: help install install-train data train compare test compose-check ci kaggle-train
+.PHONY: help install install-train data train compare graph start-ct stop-ct add-ct list-ct smoke test compose-check ci
 
 help:
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/'
 
 install: ## create .venv and install the pinned packages (what CI installs)
-	$(PYTHON) -m venv .venv
-	.venv/bin/pip install -r requirements.txt pytest==8.3.3
+	uv venv --python $(PYTHON) .venv
+	uv pip install --python .venv/bin/python -r requirements.txt pytest==8.3.3
 
 install-train: ## add PyTorch to .venv (needed for train / its tests)
-	.venv/bin/pip install -r requirements-train.txt
+	uv pip install --python .venv/bin/python -r requirements-train.txt
 
 data: ## step 2: clean and split data/train.csv + test.csv into data/processed/
 	$(PY) -m training.prepare_data
@@ -34,42 +39,31 @@ train: ## step 3a: train on data/processed, write artifacts/model.pt
 compare: ## compare the MLP with logistic regression and gradient boosting (3 seeds)
 	$(PY) -m training.compare
 
+graph: ## plot feature weights and relationships from the competition zip -> artifacts/eda/
+	$(PY) -m training.analysis.eda
+
+# CT worker (step 8): a background service that trains every job in the CT queue (training/ct_worker.py)
+CT := HOST_UID=$$(id -u) HOST_GID=$$(id -g) docker compose --profile ct
+
+start-ct: ## step 8: start the CT worker in the background (also MLflow + PostgreSQL; needs `make data`)
+	$(CT) up -d --build ct-worker
+
+stop-ct: ## step 8: stop the CT worker (a job in progress goes back to the queue)
+	$(CT) stop ct-worker
+
+add-ct: ## step 8: queue a model: make add-ct ARGS="--model random_forest"  (ARGS=--all: the 5 candidates)
+	$(CT) run --rm --build ct-worker python -m training.ct_queue add $(ARGS)
+
+list-ct: ## step 8: latest CT jobs and their results
+	$(CT) run --rm --build ct-worker python -m training.ct_queue list
+
+smoke: ## step 8: /health + /predict through Nginx on localhost:8080
+	bash .github/scripts/smoke-test.sh http://localhost:8080
+
 test: ## run pytest
 	$(PY) -m pytest -v
 
-compose-check: ## validate docker-compose.yml
-	docker compose config --quiet
+compose-check: ## validate docker-compose.yml (all profiles)
+	docker compose --profile ct --profile loadtest config --quiet
 
 ci: test compose-check ## same two checks as the GitHub Actions workflow
-
-# Train on Kaggle: make kaggle-train
-# One-time setup: pip install kaggle, add your Kaggle API credentials, join the competition
-# (accept its rules), and export KAGGLE_USERNAME=<your kaggle username>.
-# Result: artifacts/kaggle/model.pt and submission.csv (gitignored). This is the competition
-# track (competition CSVs, training/train_torch.py), separate from `make train`.
-
-KAGGLE_USER ?= $(KAGGLE_USERNAME)
-KERNEL_SLUG ?= skysat-train
-KERNEL_ID   := $(KAGGLE_USER)/$(KERNEL_SLUG)
-BUILD_DIR   := kaggle/build
-OUT_DIR     := artifacts/kaggle
-POLL_SECONDS ?= 20
-
-kaggle-train: ## train the competition model on Kaggle (private notebook), download the result
-	@command -v kaggle >/dev/null || { echo "kaggle CLI not found: pip install kaggle"; exit 1; }
-	@test -n "$(KAGGLE_USER)" || { echo "set KAGGLE_USERNAME=<your kaggle username>"; exit 1; }
-	rm -rf $(BUILD_DIR) && mkdir -p $(BUILD_DIR) $(OUT_DIR)
-	cp training/train_torch.py $(BUILD_DIR)/
-	sed "s/__USER__/$(KAGGLE_USER)/g; s/__SLUG__/$(KERNEL_SLUG)/g" kaggle/kernel-metadata.template.json > $(BUILD_DIR)/kernel-metadata.json
-	kaggle kernels push -p $(BUILD_DIR)
-	@echo "Waiting for the Kaggle run (private notebook $(KERNEL_ID))..."
-	@while :; do \
-	  s=$$(kaggle kernels status $(KERNEL_ID) 2>&1); echo "$$s"; \
-	  case "$$(echo "$$s" | tr 'A-Z' 'a-z')" in \
-	    *complete*) break ;; \
-	    *error*|*fail*|*cancel*) echo "Kaggle run did not finish cleanly - see the notebook log on kaggle.com"; exit 1 ;; \
-	  esac; \
-	  sleep $(POLL_SECONDS); \
-	done
-	kaggle kernels output $(KERNEL_ID) -p $(OUT_DIR)
-	@ls -l $(OUT_DIR)

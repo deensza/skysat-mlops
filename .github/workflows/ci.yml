@@ -1,7 +1,13 @@
-# Continuous integration: runs on every push and pull request to main.
-# The Kaggle dataset is not in the repository, so the tests use a small fake dataset.
-# Later steps add jobs for training on a small sample, the quality gate and the Docker build (step 8).
-name: CI
+# CI/CD (step 8). Pipeline: test -> image -> deploy.
+#   test    every push and pull request, on GitHub's servers. The Kaggle data is never here (competition
+#           rules), so the tests use a small fake dataset; they also train all 5 CT model types on it and
+#           check the CT queue against a throw-away PostgreSQL.
+#   image   builds the API Docker image; on main it is pushed to ghcr.io (code only, no data, no model).
+#   deploy  only on main, on the team PC (self-hosted runner, label `skysat`): pulls the new image,
+#           restarts the stack and smoke-tests it. Never runs for pull requests (see README, step 8).
+# The model itself is not part of the image: the API serves whatever MLflow's `champion` alias points
+# to, and the CT worker (training/ct_worker.py, fed by .github/workflows/ct.yml) moves that alias.
+name: CI/CD
 
 on:
   push:
@@ -10,9 +16,23 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:  # for the CT queue tests (tests/test_ct.py)
+        image: postgres:17.11-alpine
+        env:
+          POSTGRES_USER: skysat
+          POSTGRES_PASSWORD: skysat
+          POSTGRES_DB: skysat
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U skysat" --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://skysat:skysat@localhost:5432/skysat
     steps:
       - uses: actions/checkout@v4
 
@@ -21,11 +41,61 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt pytest==8.3.3
+      - name: Install dependencies (CPU-only PyTorch)
+        run: |
+          pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt "psycopg[binary]==3.3.6" pytest==8.3.3
 
       - name: Run tests
         run: python -m pytest -v
 
       - name: Check docker-compose.yml
-        run: docker compose config --quiet
+        run: docker compose --profile ct --profile loadtest config --quiet
+
+  image:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the API image
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-api"
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+          docker build -f api/Dockerfile -t "$image:$GITHUB_SHA" -t "$image:latest" .
+
+      - name: Push to ghcr.io (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "$IMAGE:$GITHUB_SHA"
+          docker push "$IMAGE:latest"
+
+  deploy:
+    needs: image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, skysat]
+    permissions:
+      contents: read
+      packages: read
+    concurrency: team-pc
+    env:
+      COMPOSE_PROJECT_NAME: skysat-mlops  # the same stack (and MLflow models) as `docker compose up` in the repo
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull the new API image
+        run: |
+          export API_IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}-api:$GITHUB_SHA"
+          echo "API_IMAGE=$API_IMAGE" >> "$GITHUB_ENV"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker compose pull api
+
+      - name: Restart the stack with it
+        run: docker compose up -d --no-build
+
+      - name: Smoke test through Nginx
+        run: bash .github/scripts/smoke-test.sh http://localhost:8080

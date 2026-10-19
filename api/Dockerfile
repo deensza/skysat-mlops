@@ -5,8 +5,10 @@ FROM python:3.12.15-slim
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 
-# CPU-only PyTorch (the default wheel on Linux x86 also pulls ~2 GB of CUDA libraries)
-RUN pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+# PyTorch wheel source. Default: CPU-only (the plain PyPI wheel on Linux x86 also pulls ~2 GB of CUDA
+# libraries). To use another one on your machine set TORCH_INDEX in .env (see .env.example).
+ARG TORCH_INDEX=https://download.pytorch.org/whl/cpu
+RUN pip install torch==2.14.1 --index-url ${TORCH_INDEX}
 COPY api/requirements.txt api/requirements.txt
 RUN pip install -r api/requirements.txt
 

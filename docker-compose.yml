@@ -21,9 +21,13 @@ services:
   # Prediction API (step 4), 3 copies behind Nginx (step 5). Not published directly:
   # use http://localhost:8080 (Swagger: /docs). Change the number: docker compose up -d --scale api=1
   api:
+    # CD (step 8) sets API_IMAGE to the image CI pushed to ghcr.io; locally the image is built from source
+    image: ${API_IMAGE:-skysat-api:local}
     build:
       context: .
       dockerfile: api/Dockerfile
+      args:
+        TORCH_INDEX: ${TORCH_INDEX:-https://download.pytorch.org/whl/cpu}
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       DATABASE_URL: postgresql://skysat:${POSTGRES_PASSWORD:-skysat}@postgres:5432/skysat
@@ -95,6 +99,33 @@ services:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Continuous training worker (step 8): make start-ct / make stop-ct; queue models with make add-ct.
+  # Trains every job in the CT queue (table ct_jobs in PostgreSQL) and promotes the best (training/ct_worker.py).
+  # The Kaggle files are mounted, never copied into the image; SKYSAT_DATA_DIR points at them when the repo
+  # checkout has no data/ (self-hosted runner). Runs as your user so files written into data/ stay yours.
+  ct-worker:
+    build:
+      context: .
+      dockerfile: training/Dockerfile
+      args:
+        TORCH_INDEX: ${TORCH_INDEX:-https://download.pytorch.org/whl/cpu}
+    profiles: ["ct"]
+    restart: unless-stopped
+    stop_grace_period: 30s  # time to put a running job back in the queue
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      DATABASE_URL: postgresql://skysat:${POSTGRES_PASSWORD:-skysat}@postgres:5432/skysat
+      GIT_COMMIT: ${GIT_COMMIT:-}
+      GIT_PYTHON_REFRESH: quiet  # no git in the image: silence MLflow's "Failed to import Git" warnings
+    volumes:
+      - ${SKYSAT_DATA_DIR:-./data}:/app/data
+    depends_on:
+      mlflow:
+        condition: service_started
       postgres:
         condition: service_healthy
 

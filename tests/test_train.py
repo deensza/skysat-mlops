@@ -71,3 +71,20 @@ def test_scaling_uses_training_rows_only(trained, data):
     meta = load_bundle(trained[0])["meta"]
     n_cat = to_matrix(data[0]).shape[1] - len(meta["mean"])
     assert np.allclose(meta["mean"], to_matrix(data[0])[:, n_cat:].mean(0), atol=1e-4)
+
+
+def test_input_options_change_the_columns_and_survive_save_and_load(data, tmp_path):
+    drop = ["gender", "departure_delay_minutes"]
+    plain = to_matrix(data[0]).shape[1]
+    assert to_matrix(data[0], rating_one_hot=True).shape[1] == plain + 6 * len(schema.RATING_FEATURES)
+    assert to_matrix(data[0], drop_features=drop).shape[1] == plain - 2 - 1  # 2 gender columns + 1 numeric
+
+    path, _ = run_training(data[0], data[1], {**PARAMS, "rating_one_hot": True, "drop_features": drop}, tmp_path)
+    bundle = load_bundle(path)  # rebuilds the right network size from the saved metadata
+    batch = predict_proba(bundle, data[1])
+    assert predict_proba(bundle, data[1].iloc[[0]])[0] == pytest.approx(batch[0], abs=1e-5)
+
+
+def test_unknown_drop_feature_is_rejected(data):
+    with pytest.raises(ValueError, match="unknown"):
+        to_matrix(data[0], drop_features=["not_a_feature"])

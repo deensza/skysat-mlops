@@ -32,6 +32,8 @@ ALIAS = "champion"
 ROC_AUC_THRESHOLD = 0.95
 
 def git_commit() -> str:
+    if os.environ.get("GIT_COMMIT"):  # set by the CT workflow: the ct-worker container has no .git folder
+        return os.environ["GIT_COMMIT"]
     try:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     except (OSError, subprocess.CalledProcessError):
@@ -54,12 +56,13 @@ def current_champion_auc(client: MlflowClient) -> float | None:
     return client.get_run(champion.run_id).data.metrics.get("roc_auc")
 
 
-def register(client: MlflowClient, run, roc_auc: float, champion_auc: float | None = None) -> None:
+def register(client: MlflowClient, run, roc_auc: float, champion_auc: float | None = None) -> str | None:
     """Quality gate. champion_auc: the champion's score on the same data as roc_auc (retraining);
-    if not given, the champion's own validation roc_auc from its MLflow run is used."""
+    if not given, the champion's own validation roc_auc from its MLflow run is used.
+    Returns the new version number, or None if the gate rejected the model."""
     if roc_auc < ROC_AUC_THRESHOLD:
         print(f"Not registered: roc_auc {roc_auc:.4f} < threshold {ROC_AUC_THRESHOLD}")
-        return
+        return None
 
     try:
         client.create_registered_model(MODEL_NAME)
@@ -78,6 +81,7 @@ def register(client: MlflowClient, run, roc_auc: float, champion_auc: float | No
         print(f"Version {version.version} is the new {ALIAS} (roc_auc {roc_auc:.4f}, previous {before})")
     else:
         print(f"{ALIAS} stays: its roc_auc {champion_auc:.4f} >= {roc_auc:.4f}")
+    return version.version
 
 
 def main():

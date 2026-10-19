@@ -34,7 +34,7 @@ from sklearn.model_selection import train_test_split
 from skysat import schema
 from skysat.monitoring import PSI_THRESHOLD, feature_psi
 from training.track import ALIAS, EXPERIMENT, MODEL_NAME, git_commit, load_data, register
-from training.train import DEFAULT_PARAMS, load_bundle, predict_proba, run_training
+from training.train import DEFAULT_PARAMS, load_bundle, model_file, predict_proba, run_training
 
 SEED = 42
 
@@ -56,7 +56,7 @@ def recent_predictions(window: int) -> pd.DataFrame:
 def champion_bundle(client: MlflowClient):
     version = client.get_model_version_by_alias(MODEL_NAME, ALIAS)
     folder = mlflow.artifacts.download_artifacts(artifact_uri=version.source, dst_path=tempfile.mkdtemp())
-    return version.version, load_bundle(Path(folder) / "model.pt")
+    return version.version, load_bundle(model_file(folder))
 
 
 def main():
@@ -99,7 +99,7 @@ def main():
     combined = pd.concat([train_df] + [recent_train] * args.recent_weight, ignore_index=True)
     tags = {"git_commit": git_commit(), "purpose": "retraining", "replaces_version": champion_version}
     with mlflow.start_run(tags=tags) as run:
-        params = dict(DEFAULT_PARAMS)
+        params = {**DEFAULT_PARAMS, **champion["meta"]["params"]}  # same recipe (model type) as the champion
         mlflow.log_params(params)
         mlflow.log_params({
             "window": args.window, "recent_weight": args.recent_weight, "psi_threshold": PSI_THRESHOLD,

@@ -1,8 +1,9 @@
-"""Step 3a – Train the satisfaction model (PyTorch MLP).
+"""Step 3a – Train the satisfaction model (PyTorch MLP, or a scikit-learn model for CT in step 8).
 
 Reads the clean files from step 2 (data/processed/train.csv and validation.csv), trains on
 train, measures on validation, and saves ONE file, artifacts/model.pt, holding the network
 weights plus everything needed to preprocess new passengers (feature order, mean/std, metrics).
+With params["model"] set to a SKLEARN_MODELS name the file is model.joblib instead (same contents).
 
     python -m training.train            # or: make train
 
@@ -18,9 +19,12 @@ produced the reported metrics.
 import argparse
 from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
 import torch
+from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
 from torch import nn
 
@@ -32,6 +36,7 @@ LOG_COLUMNS = ["flight_distance", "departure_delay_minutes", "arrival_delay_minu
 SCALED_COLUMNS = schema.NUMERIC_FEATURES + schema.RATING_FEATURES
 
 DEFAULT_PARAMS = {
+    "model": "mlp",            # or one of SKLEARN_MODELS (step 8: continuous training compares them)
     "epochs": 20,
     "batch_size": 512,
     "lr": 2e-3,
@@ -39,26 +44,58 @@ DEFAULT_PARAMS = {
     "hidden": [128, 64],
     "dropout": 0.1,
     "seed": 42,
+    # Input choices suggested by `make graph` (see training/analysis/eda.py); the defaults keep the old input.
+    "rating_one_hot": False,   # also give every 0-5 rating as separate yes/no columns (ratings act in steps, not a line)
+    "drop_features": [],       # schema feature names to leave out, e.g. ["gender", "departure_delay_minutes"]
+}
+PREP_KEYS = ("rating_one_hot", "drop_features")  # the params that change to_matrix; saved with the model
+
+# The other model types, trained on the same matrix as the MLP. The MLP-only params (epochs, lr, ...) are ignored.
+SKLEARN_MODELS = {
+    "logistic_regression": lambda seed: LogisticRegression(max_iter=1000, random_state=seed),
+    "random_forest": lambda seed: RandomForestClassifier(n_estimators=200, min_samples_leaf=3, n_jobs=-1,
+                                                         random_state=seed),
+    "gradient_boosting": lambda seed: HistGradientBoostingClassifier(random_state=seed),
 }
 
 
-def to_matrix(df: pd.DataFrame) -> np.ndarray:
-    """Passenger rows (schema.FEATURES columns) -> float32 matrix: one-hot text columns, then numbers.
+def to_matrix(df: pd.DataFrame, rating_one_hot: bool = False, drop_features=()) -> np.ndarray:
+    """Passenger rows (schema.FEATURES columns) -> float32 matrix: yes/no columns first, then scaled numbers.
 
     Deterministic: the one-hot columns come from the fixed category lists in schema.py, so a value
     we have never seen simply gives all zeros instead of changing the column layout.
+    rating_one_hot adds 6 yes/no columns (0..5) per rating; drop_features removes columns by name.
+    The scaled numbers are always the LAST columns (_standardize relies on that).
     """
+    drop = set(drop_features)
+    unknown = drop - set(schema.FEATURES)
+    if unknown:
+        raise ValueError(f"drop_features has unknown names: {sorted(unknown)}")
+
     one_hot = [
         (df[col].to_numpy()[:, None] == np.array(values)[None, :]).astype(np.float32)
-        for col, values in schema.CATEGORICAL_VALUES.items()
+        for col, values in schema.CATEGORICAL_VALUES.items() if col not in drop
     ]
-    numbers = df[SCALED_COLUMNS].astype(float)
-    numbers[LOG_COLUMNS] = np.log1p(numbers[LOG_COLUMNS].clip(lower=0))
+    if rating_one_hot:
+        levels = np.arange(schema.RATING_MIN, schema.RATING_MAX + 1)
+        one_hot += [
+            (df[col].to_numpy()[:, None] == levels[None, :]).astype(np.float32)
+            for col in schema.RATING_FEATURES if col not in drop
+        ]
+    scaled = [c for c in SCALED_COLUMNS if c not in drop]
+    numbers = df[scaled].astype(float)
+    log_cols = [c for c in LOG_COLUMNS if c in scaled]
+    numbers[log_cols] = np.log1p(numbers[log_cols].clip(lower=0))
     return np.hstack(one_hot + [numbers.to_numpy(dtype=np.float32)])
 
 
-def n_one_hot() -> int:
-    return sum(len(v) for v in schema.CATEGORICAL_VALUES.values())
+def _prep(params: dict) -> dict:
+    """The to_matrix options stored in a params dict (older models have none -> old behaviour)."""
+    return {k: params[k] for k in PREP_KEYS if k in params}
+
+
+def n_default_inputs() -> int:
+    return sum(len(v) for v in schema.CATEGORICAL_VALUES.values()) + len(SCALED_COLUMNS)
 
 
 def make_model(n_in: int, hidden: list[int], dropout: float) -> nn.Module:
@@ -88,7 +125,8 @@ def _predict(model: nn.Module, X: torch.Tensor, batch_size: int = 4096) -> np.nd
 
 def _standardize(X: np.ndarray, mean: np.ndarray, std: np.ndarray) -> np.ndarray:
     X = X.copy()
-    X[:, n_one_hot():] = (X[:, n_one_hot():] - mean) / std
+    n = len(mean)  # the scaled numbers are the last n columns
+    X[:, -n:] = (X[:, -n:] - mean) / std
     return X
 
 
@@ -108,19 +146,40 @@ def _metrics(y: np.ndarray, p: np.ndarray) -> dict:
 
 def run_training(train_df: pd.DataFrame, val_df: pd.DataFrame, params: dict | None = None,
                  out_dir: Path = OUT_DIR) -> tuple[str, dict]:
-    """Train on train_df, measure on val_df, save out_dir/model.pt. Returns (model path, metrics)."""
+    """Train on train_df, measure on val_df, save out_dir/model.pt (or model.joblib). Returns (path, metrics)."""
     p = {**DEFAULT_PARAMS, **(params or {})}
+    if p["model"] != "mlp" and p["model"] not in SKLEARN_MODELS:
+        raise ValueError(f"Unknown model {p['model']!r}; use 'mlp' or one of {sorted(SKLEARN_MODELS)}")
     torch.manual_seed(p["seed"])
     np.random.seed(p["seed"])
     device = pick_device()
 
-    X_train, X_val = to_matrix(train_df), to_matrix(val_df)
+    prep = _prep(p)
+    X_train, X_val = to_matrix(train_df, **prep), to_matrix(val_df, **prep)
     y_train = train_df[schema.TARGET].to_numpy(dtype=np.float32)
     y_val = val_df[schema.TARGET].to_numpy(dtype=int)
 
     # Scaling statistics come from the training rows only.
-    mean = X_train[:, n_one_hot():].mean(0)
-    std = X_train[:, n_one_hot():].std(0) + 1e-6
+    n_scaled = len([c for c in SCALED_COLUMNS if c not in p["drop_features"]])
+    mean = X_train[:, -n_scaled:].mean(0)
+    std = X_train[:, -n_scaled:].std(0) + 1e-6
+    meta = {
+        "features": schema.FEATURES, "mean": mean.tolist(), "std": std.tolist(), "params": p,
+        "n_train_rows": len(train_df), "n_val_rows": len(val_df),
+    }
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if p["model"] in SKLEARN_MODELS:
+        print(f"model: {p['model']} | train rows: {len(X_train):,} | validation rows: {len(X_val):,} "
+              f"| features: {X_train.shape[1]}")
+        estimator = SKLEARN_MODELS[p["model"]](p["seed"]).fit(_standardize(X_train, mean, std), y_train)
+        if "n_jobs" in estimator.get_params():
+            estimator.set_params(n_jobs=1)  # serving: one CPU core per API copy, like torch.set_num_threads(1)
+        meta["metrics"] = _metrics(y_val, estimator.predict_proba(_standardize(X_val, mean, std))[:, 1])
+        path = out_dir / "model.joblib"
+        joblib.dump({"model": estimator, "meta": meta}, path)
+        return str(path), meta["metrics"]
+
     Xt = torch.from_numpy(_standardize(X_train, mean, std)).to(device)
     Xv = torch.from_numpy(_standardize(X_val, mean, std)).to(device)
     yt = torch.from_numpy(y_train).to(device)
@@ -148,22 +207,28 @@ def run_training(train_df: pd.DataFrame, val_df: pd.DataFrame, params: dict | No
 
     metrics = _metrics(y_val, _predict(model, Xv))
 
-    meta = {
-        "features": schema.FEATURES, "mean": mean.tolist(), "std": std.tolist(),
-        "hidden": p["hidden"], "dropout": p["dropout"], "params": p,
-        "n_train_rows": len(train_df), "n_val_rows": len(val_df), "metrics": metrics,
-    }
-    out_dir.mkdir(parents=True, exist_ok=True)
+    meta.update({"hidden": p["hidden"], "dropout": p["dropout"], "n_in": int(Xt.shape[1]), "metrics": metrics})
     path = out_dir / "model.pt"
     torch.save({"state_dict": model.cpu().state_dict(), "meta": meta}, path)
     return str(path), metrics
 
 
+def model_file(folder) -> Path:
+    """The model file inside a folder downloaded from MLflow: model.pt (MLP) or model.joblib (scikit-learn)."""
+    for name in ("model.pt", "model.joblib"):
+        if (Path(folder) / name).exists():
+            return Path(folder) / name
+    raise FileNotFoundError(f"No model.pt or model.joblib in {folder}")
+
+
 def load_bundle(path) -> dict:
-    """Load model.pt (weights + preprocessing metadata) onto the CPU, ready for predict_proba."""
+    """Load model.pt or model.joblib (model + preprocessing metadata) onto the CPU, ready for predict_proba."""
+    if Path(path).suffix == ".joblib":
+        return joblib.load(path)  # a pickle: only load files from our own MLflow registry
     bundle = torch.load(path, map_location="cpu", weights_only=True)
     meta = bundle["meta"]
-    model = make_model(n_one_hot() + len(SCALED_COLUMNS), meta["hidden"], meta["dropout"])
+    n_in = meta.get("n_in", n_default_inputs())  # models saved before "n_in" existed used the default input
+    model = make_model(n_in, meta["hidden"], meta["dropout"])
     model.load_state_dict(bundle["state_dict"])
     model.eval()
     return {"model": model, "meta": meta}
@@ -172,9 +237,11 @@ def load_bundle(path) -> dict:
 def predict_proba(bundle: dict, df: pd.DataFrame) -> np.ndarray:
     """P(satisfied) for passenger rows with the schema.FEATURES columns (extra columns are ignored)."""
     meta = bundle["meta"]
-    X = _standardize(to_matrix(df[meta["features"]]),
+    X = _standardize(to_matrix(df[meta["features"]], **_prep(meta.get("params", {}))),
                      np.array(meta["mean"], dtype=np.float32), np.array(meta["std"], dtype=np.float32))
-    return _predict(bundle["model"], torch.from_numpy(X))
+    if isinstance(bundle["model"], nn.Module):
+        return _predict(bundle["model"], torch.from_numpy(X))
+    return bundle["model"].predict_proba(X)[:, 1]
 
 
 def _read(path: Path) -> pd.DataFrame:
@@ -190,10 +257,14 @@ def main():
     ap.add_argument("--epochs", type=int, default=DEFAULT_PARAMS["epochs"])
     ap.add_argument("--lr", type=float, default=DEFAULT_PARAMS["lr"])
     ap.add_argument("--seed", type=int, default=DEFAULT_PARAMS["seed"])
+    ap.add_argument("--rating-one-hot", action="store_true", help="add one-hot columns for every 0-5 rating")
+    ap.add_argument("--drop-features", nargs="*", default=[], metavar="NAME",
+                    help="schema feature names to leave out, e.g. gender departure_delay_minutes")
     args = ap.parse_args()
 
     train_df, val_df = _read(args.data_dir / "train.csv"), _read(args.data_dir / "validation.csv")
-    path, metrics = run_training(train_df, val_df, {"epochs": args.epochs, "lr": args.lr, "seed": args.seed},
+    path, metrics = run_training(train_df, val_df, {"epochs": args.epochs, "lr": args.lr, "seed": args.seed,
+                                  "rating_one_hot": args.rating_one_hot, "drop_features": args.drop_features},
                                  args.out_dir)
     print("validation metrics:")
     for k, v in metrics.items():
