@@ -27,13 +27,13 @@ export MLFLOW_TRACKING_URI MLFLOW_TRACKING_USERNAME MLFLOW_TRACKING_PASSWORD
 .PHONY: help install install-train data train compare graph add-ct list-ct ct-local submission submit kaggle-scores smoke test compose-check ci
 
 help:
-	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/'
+	@awk -F ':.*## ' '/^[a-z-]+:.*## /{printf "%-16s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 install: ## create .venv and install the pinned packages (what CI installs)
 	uv venv --python $(PYTHON) .venv
 	uv pip install --python .venv/bin/python -r requirements.txt pytest==8.3.3
 
-install-train: ## add PyTorch to .venv (needed for train / its tests)
+install-train: ## add PyTorch, the Kaggle CLI and psycopg to .venv (training, retraining, competition)
 	uv pip install --python .venv/bin/python -r requirements-train.txt
 
 data: ## step 2: clean and split data/train.csv + test.csv into data/processed/

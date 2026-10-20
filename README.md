@@ -41,21 +41,23 @@ Dataset: [Airline Passenger Satisfaction](https://www.kaggle.com/datasets/teejma
 
 ## Setup
 
-Requirements: Git, Docker Desktop, Python 3.12.
+The team uses Linux and macOS (Apple Silicon). You need Git, Docker (Docker Desktop on a Mac), `make` and
+[uv](https://docs.astral.sh/uv/):
+
+- macOS: `xcode-select --install` (gives git and make), then `brew install uv`
+- Linux: git, make and uv from your package manager (or uv's install script from its website)
+- Windows: not tested; use WSL2
 
 ```bash
-# macOS / Linux
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+make install          # .venv with Python 3.12 + the pinned packages (uv downloads Python 3.12 if needed)
+make install-train    # + PyTorch, the Kaggle CLI and psycopg (training, retraining, competition track)
+make test             # should end with "passed"
 ```
 
-```powershell
-# Windows (PowerShell)
-py -3.12 -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-```
+`make` uses `.venv` by itself; `source .venv/bin/activate` only if you want to run `python` directly.
+On Linux without an NVIDIA GPU, PyPI's PyTorch brings ~2 GB of CUDA libraries; the comment at the top of
+[requirements-train.txt](requirements-train.txt) shows the smaller CPU-only install. On a Mac PyPI's build is the
+right one.
 
 Then download the dataset as described in [data/README.md](data/README.md).
 
