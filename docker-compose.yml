@@ -29,7 +29,11 @@ services:
       args:
         TORCH_INDEX: ${TORCH_INDEX:-https://download.pytorch.org/whl/cpu}
     environment:
-      MLFLOW_TRACKING_URI: http://mlflow:5000
+      # Step 8: the team's shared MLflow (DagsHub) when it is set in .env, else the local one below
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
+      MLFLOW_TRACKING_USERNAME: ${MLFLOW_TRACKING_USERNAME:-}
+      MLFLOW_TRACKING_PASSWORD: ${MLFLOW_TRACKING_PASSWORD:-}
+      MODEL_RELOAD_SECONDS: ${MODEL_RELOAD_SECONDS:-10}
       DATABASE_URL: postgresql://skysat:${POSTGRES_PASSWORD:-skysat}@postgres:5432/skysat
     deploy:
       replicas: 3
@@ -99,33 +103,6 @@ services:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
-      postgres:
-        condition: service_healthy
-
-  # Continuous training worker (step 8): make start-ct / make stop-ct; queue models with make add-ct.
-  # Trains every job in the CT queue (table ct_jobs in PostgreSQL) and promotes the best (training/ct_worker.py).
-  # The Kaggle files are mounted, never copied into the image; SKYSAT_DATA_DIR points at them when the repo
-  # checkout has no data/ (self-hosted runner). Runs as your user so files written into data/ stay yours.
-  ct-worker:
-    build:
-      context: .
-      dockerfile: training/Dockerfile
-      args:
-        TORCH_INDEX: ${TORCH_INDEX:-https://download.pytorch.org/whl/cpu}
-    profiles: ["ct"]
-    restart: unless-stopped
-    stop_grace_period: 30s  # time to put a running job back in the queue
-    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
-    environment:
-      MLFLOW_TRACKING_URI: http://mlflow:5000
-      DATABASE_URL: postgresql://skysat:${POSTGRES_PASSWORD:-skysat}@postgres:5432/skysat
-      GIT_COMMIT: ${GIT_COMMIT:-}
-      GIT_PYTHON_REFRESH: quiet  # no git in the image: silence MLflow's "Failed to import Git" warnings
-    volumes:
-      - ${SKYSAT_DATA_DIR:-./data}:/app/data
-    depends_on:
-      mlflow:
-        condition: service_started
       postgres:
         condition: service_healthy
 

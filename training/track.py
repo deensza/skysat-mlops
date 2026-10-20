@@ -32,7 +32,7 @@ ALIAS = "champion"
 ROC_AUC_THRESHOLD = 0.95
 
 def git_commit() -> str:
-    if os.environ.get("GIT_COMMIT"):  # set by the CT workflow: the ct-worker container has no .git folder
+    if os.environ.get("GIT_COMMIT"):  # lets a build without a .git folder still say which commit it is
         return os.environ["GIT_COMMIT"]
     try:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
@@ -99,7 +99,7 @@ def main():
         train_df, val_df = load_data()
         params = dict(DEFAULT_PARAMS)
 
-    mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5050"))
+    mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI") or "http://localhost:5050")
     mlflow.set_experiment(EXPERIMENT)
     client = MlflowClient()
 

@@ -215,40 +215,39 @@ The map of all the pieces is in [docs/architecture.md](docs/architecture.md). Th
 
 | Loop | Workflow | Runs on | When | What |
 |---|---|---|---|---|
-| **CI** | `ci.yml` → `test`, `image` | GitHub's servers | every push / pull request | pytest on **fake data** (incl. training all 5 model types and the CT queue), compose check, API image build |
-| **CD** | `ci.yml` → `deploy` | team PC (self-hosted runner) | push to `main`, after CI | push image to `ghcr.io/<repo>-api`, pull it on the PC, `docker compose up -d`, smoke test |
-| **CT** | `ct.yml` → `candidates` | team PC | Mondays, by hand, new training code on `main` | (re)start the CT worker, queue the 5 candidates |
-| **CT** | `ct.yml` → `drift` | team PC | daily, by hand | step 7's drift check; retrains the champion's model type only if drift |
+| **CI** | `ci.yml` → `test`, `image` | GitHub's servers | every push / pull request | pytest on **fake data** (incl. training all 5 model types), compose check, API image build |
+| **CT** | `ct.yml` → `train` | GitHub's servers | `make add-ct`, the *Run workflow* button, Mondays, new training code on `main` | download the dataset, train, register, promote the best: all in the **shared MLflow** |
+| **CD** | `ci.yml` → `deploy` | a team PC (self-hosted runner), optional | push to `main`, after CI | push image to `ghcr.io/<repo>-api`, pull it on the PC, `docker compose up -d`, smoke test |
 
-**Why the team PC:** the competition rules forbid putting the Kaggle data on anyone else's servers, so training
-on real data runs where the data already is. The `ct-worker` container mounts `data/`; the data is never copied
-into an image, uploaded or logged.
+Drift retraining (step 7, `python -m training.retrain`) stays a command you run where the stack is running,
+because it needs that machine's prediction log; with the shared MLflow set in `.env` its model lands there too.
 
-### CT = a background worker + a queue
+### CT on GitHub, results in one shared MLflow
 
-Training is its own service. Jobs wait in a queue (table `ct_jobs` in the PostgreSQL that already runs); the
-`ct-worker` container takes the oldest one (`SELECT … FOR UPDATE SKIP LOCKED`, so no job is trained twice),
-trains it, logs it to MLflow (`purpose=ct`, `ct_job`, `model_type`), applies the quality gate and makes it
-`champion` if it beats the current one. Anyone can add jobs: you, the CT workflow, a cron job.
+No team PC has to be on. GitHub's run queue is the job queue and its machines are the workers:
 
 ```bash
-make start-ct                                   # start the worker in the background (needs `make data`)
-make add-ct ARGS="--model random_forest"        # queue one model (mlp, logistic_regression, random_forest, gradient_boosting)
+make add-ct ARGS="--model random_forest"        # ask GitHub to train one model (mlp, logistic_regression, random_forest, gradient_boosting)
 make add-ct ARGS="--model mlp --rating-one-hot --epochs 30 --name mlp-30-epochs"
 make add-ct ARGS=--all                          # the 5 standard candidates
-make list-ct                                    # queued / running / done / failed, with ROC AUC and version
-docker compose --profile ct logs -f ct-worker   # watch it live
-make stop-ct                                    # stop; a job in progress goes back to the queue
+make list-ct                                    # recent CT runs: queued / in progress / success / failure
+make ct-local ARGS="--model mlp --epochs 5"     # the same training on this computer (needs `make data`)
 make smoke                                      # what CD checks after a deploy: /health + /predict via Nginx
 ```
 
+Every CT run ([training/ct.py](training/ct.py)) downloads the **original** Kaggle dataset (the one `make data`
+uses, not the competition data), trains each requested model on the same split, logs it to the team's MLflow on
+**DagsHub** (`purpose=ct`, `model_type`), registers it if ROC AUC ≥ 0.95 and makes it `champion` if it beats the
+current one. Both team members' APIs load the champion from that same MLflow, so everyone serves the same model.
+The data only lives on GitHub's temporary machine; it is never printed, uploaded or committed.
+
 The API serves scikit-learn models (`model.joblib`) as well as the MLP (`model.pt`); `GET /model` shows
-`model_type`. A failing job is marked `failed` with the reason and the worker carries on.
+`model_type`.
 
-Measured on the team PC (Linux, CPU only), `make add-ct ARGS=--all` on a fresh MLflow, original dataset
-(83,123 train / 20,781 validation rows):
+Measured on the team PC (Linux, CPU only) with the same training code, the 5 candidates on a fresh MLflow,
+original dataset (83,123 train / 20,781 validation rows):
 
-| Job | Model | Validation ROC AUC | Result |
+| Order | Model | Validation ROC AUC | Result |
 |---|---|---|---|
 | 1 | logistic_regression (one-hot ratings) | 0.9807 | version 1, champion |
 | 2 | random_forest | 0.9941 | version 2, champion |
@@ -258,28 +257,43 @@ Measured on the team PC (Linux, CPU only), `make add-ct ARGS=--all` on a fresh M
 
 - The top three are within 0.0007 of each other: about the size of the seed-to-seed noise measured earlier
   (≤ 0.0005), so "best" here is partly luck.
-- Checked: stopping the worker mid-job puts the job back to `queued`, and it is trained after `make start-ct`;
-  a job with a bad parameter ends `failed` with the reason and the worker keeps running; `make add-ct` rejects
-  unknown model or feature names before they reach the queue.
+- `make ct-local ARGS="--model logistic_regression --rating-one-hot"` reproduces 0.9807 exactly (fixed seeds).
 
-### One-time setup of the self-hosted runner (repo admin)
+### One-time setup
 
-1. **Protect the PC from strangers' pull requests first.** The repo is public, and GitHub warns that on a public
-   repo anyone can open a pull request whose (edited) workflow runs on a self-hosted runner. Our workflows never
-   use the PC for pull requests, but a pull request can change that, so: Settings → Actions → General →
-   *Fork pull request workflows from outside collaborators* → **Require approval for all external
-   contributors**, and never approve a run from someone outside the team.
-2. Settings → Actions → Runners → **New self-hosted runner** (Linux x64). Follow the commands, and when asked for
-   labels add `skysat`. Install it as a service (`sudo ./svc.sh install && sudo ./svc.sh start`) so it survives
-   reboots.
-3. In the runner folder, create `.env` with the absolute path of the Kaggle files, then restart the service:
-   ```
-   SKYSAT_DATA_DIR=/home/<you>/Projects/skysat-mlops/data
-   ```
-4. The runner user needs Docker (`docker ps` works without sudo).
+**DagsHub (the shared MLflow).** Check DagsHub's pages as you go; its menus may have moved.
 
-The runner shares the Docker Compose project `skysat-mlops` with your normal `docker compose up`, so CD and CT
-work on the same MLflow models and prediction log you see locally.
+1. Both team members create a free DagsHub account.
+2. One of you creates a **private** DagsHub repository (e.g. `skysat-mlops`) and adds the other as a collaborator.
+   Private matters: only collaborators can see the runs and models. The free plan's limits at the time of writing:
+   2 collaborators and 100 tracked runs in a private project (a 5-model round uses 5).
+3. Its MLflow address is `https://dagshub.com/<owner>/<repo>.mlflow`. Each of you creates a DagsHub token and puts
+   the three `MLFLOW_TRACKING_*` lines from [.env.example](.env.example) into your own `.env`.
+4. **First check:** `make data` then `make ct-local ARGS="--model logistic_regression --rating-one-hot"`. It must end
+   with `registered as version 1` after `Version 1 is the new champion`. That proves DagsHub accepts runs, model
+   versions and the `champion` alias (which the API needs). If the alias step fails, stop and ask.
+
+**GitHub (repository owner, once):** Settings → Secrets and variables → Actions.
+
+| Kind | Name | Value |
+|---|---|---|
+| Variable | `MLFLOW_TRACKING_URI` | `https://dagshub.com/<owner>/<repo>.mlflow` |
+| Variable | `MLFLOW_TRACKING_USERNAME` | the DagsHub user whose token is below |
+| Secret | `MLFLOW_TRACKING_PASSWORD` | that DagsHub token |
+| Secret | `KAGGLE_API_TOKEN` | a Kaggle API token (Kaggle → Settings → API → *Generate New Token*) |
+
+Secrets never appear in logs, and runs started by strangers' pull requests never receive them. GitHub only lets you
+start a workflow by hand once its file is on `main`, so merge first; after that `make add-ct CT_REF=<branch>`
+trains with another branch's code.
+
+**Optional, CD to a PC (self-hosted runner).** Only for a PC that is on when you push to `main`.
+
+1. On this public repo, first set Settings → Actions → General → *Fork pull request workflows from outside
+   collaborators* → **Require approval for all external contributors**, and never approve runs from strangers:
+   otherwise a stranger's pull request could edit a workflow to run code on that PC.
+2. Settings → Actions → Runners → **New self-hosted runner** (Linux x64), label `skysat`, install it as a service
+   (`sudo ./svc.sh install && sudo ./svc.sh start`). The runner user needs Docker without sudo.
+3. Set the repository variable `DEPLOY_TO_RUNNER` to `true`. Without it the `deploy` job is skipped.
 
 ## Status
 
@@ -290,7 +304,7 @@ work on the same MLflow models and prediction log you see locally.
 - [x] Step 5 – Scaling and load test
 - [x] Step 6 – Prediction logging and monitoring
 - [x] Step 7 – Drift detection and retraining
-- [ ] Step 8 – CI/CD (code done; waiting for the self-hosted runner, see step 8)
+- [ ] Step 8 – CI/CD (code done; waiting for the DagsHub + GitHub setup, see step 8)
 - [ ] Step 9 – Demo scenario and documentation
 - [ ] Step 10 – Presentation
 

@@ -89,7 +89,7 @@ def main():
         labelled, test_size=0.3, stratify=labelled[schema.TARGET], random_state=SEED
     )
 
-    mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5050"))
+    mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI") or "http://localhost:5050")
     mlflow.set_experiment(EXPERIMENT)
     client = MlflowClient()
     champion_version, champion = champion_bundle(client)
