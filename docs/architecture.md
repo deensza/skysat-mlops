@@ -146,8 +146,8 @@ flowchart LR
 | **CD** – continuous deployment | "Is the newest code running?" Pushes the API image; a team PC with a runner pulls it | [ci.yml](../.github/workflows/ci.yml) `deploy` (optional) |
 
 **Where the data is:** the pipeline trains on the **original** Kaggle dataset
-(teejmahal20/airline-passenger-satisfaction), not on the competition files. CT downloads it with the team's
-Kaggle token at the start of each run, onto a temporary GitHub machine that is thrown away afterwards. It is
+(teejmahal20/airline-passenger-satisfaction), not on the competition files. CT downloads it at the start of each
+run (it is public, no login needed), onto a temporary GitHub machine that is thrown away afterwards. It is
 never printed, uploaded or committed. CI does not need it at all: the tests make up their own fake passengers.
 
 **CD is optional:** a *self-hosted runner* is a small GitHub program on a PC that picks up jobs. It only makes
@@ -186,7 +186,7 @@ nginx/          load balancer config
 simulator/      sends live passengers (normal or "winter storm" drift) to the API
 skysat/         shared code: schema (columns), data cleaning, drift (PSI)
 training/       prepare_data, train, track (MLflow), ct (continuous training), retrain (drift),
-                compare, analysis/eda (charts)
+                compare, analysis/eda (charts), competition (Kaggle leaderboard track, local only)
 tests/          pytest, fake data only
 .github/        CI/CD (ci.yml), CT (ct.yml), smoke test (scripts/)
 ```

@@ -10,6 +10,8 @@
 #   make list-ct        step 8: recent CT runs on GitHub (results: the shared MLflow)
 #   make ct-local ARGS= step 8: the same training on this computer
 #   make smoke          step 8: smoke-test the running stack (what CD runs after a deploy)
+#   make submission     competition: 5-fold CV + artifacts/kaggle/submission.csv (stays on this PC)
+#   make submit MSG=..  competition: upload it to Kaggle;  make kaggle-scores: your public scores
 #   make test           run the tests
 #   make ci             run the same checks as the GitHub Actions workflow
 
@@ -17,11 +19,12 @@
 PYTHON ?= 3.12
 # Use the project's .venv when it exists, else whatever python3 is on the PATH
 PY := $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
+KAGGLE := $(if $(wildcard .venv/bin/kaggle),.venv/bin/kaggle,kaggle)
 # Settings from .env (e.g. the team's shared MLflow, see .env.example) reach every command below
 -include .env
 export MLFLOW_TRACKING_URI MLFLOW_TRACKING_USERNAME MLFLOW_TRACKING_PASSWORD
 
-.PHONY: help install install-train data train compare graph add-ct list-ct ct-local smoke test compose-check ci
+.PHONY: help install install-train data train compare graph add-ct list-ct ct-local submission submit kaggle-scores smoke test compose-check ci
 
 help:
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/'
@@ -58,6 +61,19 @@ list-ct: ## step 8: recent CT runs on GitHub
 
 ct-local: ## step 8: the same training on this computer (needs make data): make ct-local ARGS="--model mlp"
 	$(PY) -m training.ct $(ARGS)
+
+# Kaggle competition track (training/competition.py). The competition data stays on this PC: never on GitHub.
+COMPETITION := playground-series-s6e10
+
+submission: ## competition: 5-fold CV + artifacts/kaggle/submission.csv (needs data/playground-series-s6e10.zip)
+	$(PY) -m training.competition $(ARGS)
+
+submit: ## competition: upload the submission: make submit MSG="what changed" (needs your Kaggle token)
+	@test -n "$(MSG)" || { echo 'Say what this submission is: make submit MSG="hgb, 127 leaves"'; exit 1; }
+	$(KAGGLE) competitions submit -c $(COMPETITION) -f artifacts/kaggle/submission.csv -m "$(MSG)"
+
+kaggle-scores: ## competition: your team's submissions and their public leaderboard scores
+	$(KAGGLE) competitions submissions -c $(COMPETITION)
 
 smoke: ## step 8: /health + /predict through Nginx on localhost:8080
 	bash .github/scripts/smoke-test.sh http://localhost:8080

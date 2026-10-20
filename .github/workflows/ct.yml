@@ -1,6 +1,7 @@
 # Continuous training (step 8), on GitHub's servers, so it runs while every team PC is off.
 # 1. downloads the ORIGINAL Kaggle dataset (teejmahal20/airline-passenger-satisfaction, the one `make data`
-#    uses; not the competition data) with the team's Kaggle token
+#    uses; not the competition data). It is public: Kaggle allows downloading it without a login (checked
+#    2026-10-20). If that changes, add a secret KAGGLE_API_TOKEN and pass it to the download step.
 # 2. trains what was asked (training/ct.py), registers the models that pass the quality gate, promotes the best
 # 3. everything goes to the team's shared MLflow on DagsHub: runs, versions and the `champion` the APIs serve
 # The data only lives on the temporary GitHub machine and disappears with it: never printed, uploaded or committed.
@@ -36,10 +37,8 @@ jobs:
       CT_ARGS: ${{ inputs.args || '--all' }}  # read from env, never pasted into the script (no injection)
     steps:
       - name: Check the team settings exist
-        env:
-          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
         run: |
-          for name in MLFLOW_TRACKING_URI MLFLOW_TRACKING_USERNAME MLFLOW_TRACKING_PASSWORD KAGGLE_API_TOKEN; do
+          for name in MLFLOW_TRACKING_URI MLFLOW_TRACKING_USERNAME MLFLOW_TRACKING_PASSWORD; do
             test -n "${!name}" || { echo "Missing $name: see README step 8 (repository variables and secrets)"; exit 1; }
           done
 
@@ -56,8 +55,6 @@ jobs:
           pip install -r requirements.txt kaggle==2.2.4
 
       - name: Download the dataset
-        env:
-          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
         run: kaggle datasets download teejmahal20/airline-passenger-satisfaction -p data --unzip
 
       - name: Prepare the data (step 2)

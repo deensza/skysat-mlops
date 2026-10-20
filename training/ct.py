@@ -26,7 +26,7 @@ import mlflow
 from mlflow import MlflowClient
 
 from skysat import schema
-from training.track import EXPERIMENT, ROC_AUC_THRESHOLD, git_commit, load_data, register
+from training.track import EXPERIMENT, ROC_AUC_THRESHOLD, champion_auc_on, git_commit, load_data, register
 from training.train import DEFAULT_PARAMS, SKLEARN_MODELS, run_training
 
 MODELS = ["mlp", *SKLEARN_MODELS]
@@ -67,8 +67,10 @@ def parse_jobs(argv: list[str] | None = None) -> dict:
     return {args.name or args.model + ("_rating_one_hot" if args.rating_one_hot else ""): params}
 
 
-def train_and_register(client: MlflowClient, train_df, val_df, name: str, overrides: dict) -> tuple[float, str | None]:
-    """Train one model, log it to MLflow, apply the quality gate. Returns (roc_auc, registered version or None)."""
+def train_and_register(client: MlflowClient, train_df, val_df, name: str, overrides: dict,
+                       champion_auc: float | None) -> tuple[float, str | None]:
+    """Train one model, log it to MLflow, apply the quality gate. champion_auc: the champion's score on the same
+    validation rows (None: no champion yet). Returns (roc_auc, registered version or None)."""
     params = {**DEFAULT_PARAMS, **overrides}
     tags = {"git_commit": git_commit(), "purpose": "ct", "model_type": params["model"]}
     with tempfile.TemporaryDirectory() as tmp, mlflow.start_run(run_name=f"ct-{name}", tags=tags) as run:
@@ -77,7 +79,7 @@ def train_and_register(client: MlflowClient, train_df, val_df, name: str, overri
         path, metrics = run_training(train_df, val_df, params, Path(tmp))
         mlflow.log_metrics(metrics)
         mlflow.log_artifact(path, artifact_path="model")
-        version = register(client, run, metrics["roc_auc"])
+        version = register(client, run, metrics["roc_auc"], champion_auc=champion_auc)
     return metrics["roc_auc"], version
 
 
@@ -89,10 +91,13 @@ def main():
     client = MlflowClient()
     print(f"MLflow: {mlflow.get_tracking_uri()}")
 
+    champion_auc = champion_auc_on(client, val_df)  # the champion takes the same exam as the candidates
     results = {}
     for name, overrides in jobs.items():
         print(f"\n== {name} {overrides} ==", flush=True)
-        results[name] = train_and_register(client, train_df, val_df, name, overrides)
+        auc, version = results[name] = train_and_register(client, train_df, val_df, name, overrides, champion_auc)
+        if version and (champion_auc is None or auc > champion_auc):
+            champion_auc = auc  # register() just made this one the champion
 
     print(f"\nCT results (quality gate: roc_auc >= {ROC_AUC_THRESHOLD}):")
     for name, (auc, version) in sorted(results.items(), key=lambda r: -r[1][0]):

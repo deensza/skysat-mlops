@@ -105,9 +105,11 @@ python -m training.track --stub --stub-auc 0.97   # fake training: tries the reg
 ```
 
 - Each run logs the parameters, validation metrics, tags (`git_commit`, `purpose=training`) and `model/model.pt`.
-- **Quality gate:** a model is registered as `skysat-satisfaction` only if validation **ROC AUC ≥ 0.95**
-  (the LightGBM baseline reaches ~0.958).
-- The `champion` alias moves to the new version only if its ROC AUC is higher than the current champion's.
+- **Quality gate:** a model is registered as `skysat-satisfaction` only if validation **ROC AUC ≥ 0.95**.
+  Real models on this dataset score 0.98–0.996 (step 8), so the gate catches broken models, not merely weaker ones.
+- The `champion` alias moves to the new version only if its ROC AUC is higher than the current champion's,
+  **both measured on the same validation rows**: the champion is downloaded and re-scored, not judged by the number
+  stored when it was trained (that number may come from other rows, e.g. step 7's recent holdout).
   The API (step 4) loads `models:/skysat-satisfaction@champion`, so a better model goes live without a code change.
 - Runs and models are kept in the `mlflow-data` Docker volume. `docker compose down -v` deletes them.
 
@@ -258,6 +260,10 @@ original dataset (83,123 train / 20,781 validation rows):
 - The top three are within 0.0007 of each other: about the size of the seed-to-seed noise measured earlier
   (≤ 0.0005), so "best" here is partly luck.
 - `make ct-local ARGS="--model logistic_regression --rating-one-hot"` reproduces 0.9807 exactly (fixed seeds).
+- Before comparing, CT re-scores the champion on the same validation rows (`Champion (version 5) on the same rows:
+  roc_auc 0.9955`). Known limitation: those rows are the original, pre-storm passengers, so after a drift
+  retraining (step 7) a weekly CT round can still replace the storm-adapted model with one that is better on
+  normal passengers. Check `GET /model` after a CT round if you just retrained for drift.
 
 ### One-time setup
 
@@ -280,7 +286,6 @@ original dataset (83,123 train / 20,781 validation rows):
 | Variable | `MLFLOW_TRACKING_URI` | `https://dagshub.com/<owner>/<repo>.mlflow` |
 | Variable | `MLFLOW_TRACKING_USERNAME` | the DagsHub user whose token is below |
 | Secret | `MLFLOW_TRACKING_PASSWORD` | that DagsHub token |
-| Secret | `KAGGLE_API_TOKEN` | a Kaggle API token (Kaggle → Settings → API → *Generate New Token*) |
 
 Secrets never appear in logs, and runs started by strangers' pull requests never receive them. GitHub only lets you
 start a workflow by hand once its file is on `main`, so merge first; after that `make add-ct CT_REF=<branch>`
@@ -294,6 +299,34 @@ trains with another branch's code.
 2. Settings → Actions → Runners → **New self-hosted runner** (Linux x64), label `skysat`, install it as a service
    (`sudo ./svc.sh install && sudo ./svc.sh start`). The runner user needs Docker without sudo.
 3. Set the repository variable `DEPLOY_TO_RUNNER` to `true`. Without it the `deploy` job is skipped.
+
+## Kaggle competition track
+
+A separate track for the leaderboard of [Playground S6E10](https://www.kaggle.com/competitions/playground-series-s6e10)
+(metric ROC AUC, 10 submissions per day, final deadline 2026-10-31 23:59 UTC). Separate because the competition
+files have other columns (no "Inflight service", True/False target) and must stay on the team's PCs, so this never
+runs on GitHub and never touches the API's model registry.
+
+```bash
+make submission                       # 5-fold CV + artifacts/kaggle/submission.csv (~1 min), logged to MLflow `skysat-kaggle`
+make submit MSG="hgb, 127 leaves"     # upload it (needs a Kaggle token in ~/.kaggle/access_token: Kaggle → Settings → API)
+make kaggle-scores                    # the team's submissions and their public leaderboard scores
+```
+
+[training/competition.py](training/competition.py): scikit-learn gradient boosting, 5-fold stratified
+cross-validation on the 699,635 competition train rows; the submission averages the 5 fold models' predictions.
+Settings chosen by CV ROC AUC (all runs in the file's docstring):
+
+| Setting | CV ROC AUC |
+|---|---|
+| scikit-learn defaults | 0.95767 ± 0.00063 |
+| + the original dataset as extra training rows (allowed external data) | 0.95727 (worse in all 5 folds) |
+| learning rate 0.05, up to 1000 rounds, 127 leaves (**default**) | **0.95853 ± 0.00053** |
+
+- Same settings → byte-identical submission (sha256 printed and logged), so a leaderboard score can always be traced
+  back to its MLflow run.
+- The public leaderboard scores only part of the test set; the private part decides. Choose by CV, not by chasing
+  the public score.
 
 ## Status
 

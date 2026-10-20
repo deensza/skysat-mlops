@@ -33,8 +33,8 @@ from sklearn.model_selection import train_test_split
 
 from skysat import schema
 from skysat.monitoring import PSI_THRESHOLD, feature_psi
-from training.track import ALIAS, EXPERIMENT, MODEL_NAME, git_commit, load_data, register
-from training.train import DEFAULT_PARAMS, load_bundle, model_file, predict_proba, run_training
+from training.track import EXPERIMENT, champion_bundle, git_commit, load_data, register
+from training.train import DEFAULT_PARAMS, load_bundle, predict_proba, run_training
 
 SEED = 42
 
@@ -51,12 +51,6 @@ def recent_predictions(window: int) -> pd.DataFrame:
     df = pd.DataFrame([features for features, _ in rows])[schema.FEATURES]
     df[schema.TARGET] = [actual for _, actual in rows]
     return df
-
-
-def champion_bundle(client: MlflowClient):
-    version = client.get_model_version_by_alias(MODEL_NAME, ALIAS)
-    folder = mlflow.artifacts.download_artifacts(artifact_uri=version.source, dst_path=tempfile.mkdtemp())
-    return version.version, load_bundle(model_file(folder))
 
 
 def main():
@@ -92,7 +86,9 @@ def main():
     mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI") or "http://localhost:5050")
     mlflow.set_experiment(EXPERIMENT)
     client = MlflowClient()
-    champion_version, champion = champion_bundle(client)
+    if (current := champion_bundle(client)) is None:
+        raise SystemExit("ERROR: there is no champion yet to compare with. Train one first (make ct-local).")
+    champion_version, champion = current
     champion_auc = float(roc_auc_score(holdout[schema.TARGET], predict_proba(champion, holdout)))
     print(f"Champion (version {champion_version}) on the recent holdout: roc_auc {champion_auc:.4f}")
 

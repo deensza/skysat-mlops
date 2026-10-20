@@ -1,4 +1,4 @@
-"""Checks for step 3a (training). Skipped automatically when PyTorch is not installed (e.g. in CI for now)."""
+"""Checks for step 3a (training). Skipped automatically when PyTorch is not installed (CI installs it)."""
 
 import numpy as np
 import pytest
