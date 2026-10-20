@@ -12,6 +12,9 @@
 #   make smoke          step 8: smoke-test the running stack (what CD runs after a deploy)
 #   make submission     competition: 5-fold CV + artifacts/kaggle/submission.csv (stays on this PC)
 #   make submit MSG=..  competition: upload it to Kaggle;  make kaggle-scores: your public scores
+#   make d-up / d-down  start / stop the Docker stack (data is kept);  make d-ps: what is running
+#   make d-build        rebuild the images from the current code and restart what changed
+#   make d-logs         follow the logs (one service: make d-logs SERVICE=api)
 #   make test           run the tests
 #   make ci             run the same checks as the GitHub Actions workflow
 
@@ -24,7 +27,7 @@ KAGGLE := $(if $(wildcard .venv/bin/kaggle),.venv/bin/kaggle,kaggle)
 -include .env
 export MLFLOW_TRACKING_URI MLFLOW_TRACKING_USERNAME MLFLOW_TRACKING_PASSWORD
 
-.PHONY: help install install-train data train compare graph add-ct list-ct ct-local submission submit kaggle-scores smoke test compose-check ci
+.PHONY: help install install-train data train compare graph add-ct list-ct ct-local submission submit kaggle-scores smoke d-up d-build d-down d-ps d-logs d-loadtest d-wipe test compose-check ci
 
 help:
 	@awk -F ':.*## ' '/^[a-z-]+:.*## /{printf "%-16s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -74,6 +77,31 @@ submit: ## competition: upload the submission: make submit MSG="what changed" (n
 
 kaggle-scores: ## competition: your team's submissions and their public leaderboard scores
 	$(KAGGLE) competitions submissions -c $(COMPETITION)
+
+# Docker stack (docker-compose.yml): MLflow, PostgreSQL, 3 API copies, Nginx, Grafana
+SERVICE ?=
+
+d-up: ## docker: start everything in the background (after editing .env too: changed settings are applied)
+	docker compose up -d
+
+d-build: ## docker: rebuild images from the current code and restart what changed (after editing api/, skysat/, training/train.py)
+	docker compose up -d --build
+
+d-down: ## docker: stop everything cleanly; all data is kept (use this, not `docker compose kill`)
+	docker compose down
+
+d-ps: ## docker: what is running, and is it healthy
+	docker compose ps
+
+d-logs: ## docker: follow the logs, Ctrl+C to stop (one service: make d-logs SERVICE=api)
+	docker compose logs -f --tail 50 $(SERVICE)
+
+d-loadtest: ## docker: k6 load test, 50 users for 30 s against POST /predict (step 5)
+	docker compose --profile loadtest run --rm --no-deps k6
+
+d-wipe: ## docker: stop and DELETE the local data (prediction log, local MLflow, Grafana); asks first
+	@printf "Delete ALL local Docker data: prediction log, local MLflow models, Grafana? [y/N] "; read answer; \
+	if [ "$$answer" = y ]; then docker compose down -v; else echo "Nothing deleted."; fi
 
 smoke: ## step 8: /health + /predict through Nginx on localhost:8080
 	bash .github/scripts/smoke-test.sh http://localhost:8080

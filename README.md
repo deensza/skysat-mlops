@@ -61,6 +61,17 @@ right one.
 
 Then download the dataset as described in [data/README.md](data/README.md).
 
+Day to day, the Docker stack has shortcuts (`make help` lists everything):
+
+```bash
+make d-up        # start MLflow, PostgreSQL, 3 API copies, Nginx, Grafana in the background
+make d-ps        # what is running, and is it healthy
+make d-build     # after changing code: rebuild the images and restart what changed
+make d-logs      # follow the logs (one service: make d-logs SERVICE=api)
+make d-down      # stop everything; data is kept
+make d-wipe      # stop and delete the local data (asks first)
+```
+
 ## Step 2 – Data preparation and traffic simulator
 
 ```bash
