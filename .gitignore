@@ -19,10 +19,10 @@ data/*
 mlruns/
 mlartifacts/
 
-# Trained model files and Kaggle run outputs (models go through MLflow, not git)
+# Trained model files (models go through MLflow, not git)
 *.pt
+*.joblib
 artifacts/
-kaggle/build/
 
 # Environment / secrets
 .env

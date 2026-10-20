@@ -1,6 +1,8 @@
-# Extra packages for training (step 3) and retraining (step 7: reads the prediction log). Not needed by the tests that run in CI today.
+# Extra packages for local training (step 3), retraining (step 7: reads the prediction log) and the competition
+# track. CI and the CT workflow install CPU-only PyTorch + requirements.txt themselves.
 # Linux without a GPU can save ~2 GB with the CPU build:
 #   pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
 -r requirements.txt
 torch==2.14.1
+kaggle==2.2.4
 psycopg[binary]==3.3.6

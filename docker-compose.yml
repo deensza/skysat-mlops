@@ -21,11 +21,19 @@ services:
   # Prediction API (step 4), 3 copies behind Nginx (step 5). Not published directly:
   # use http://localhost:8080 (Swagger: /docs). Change the number: docker compose up -d --scale api=1
   api:
+    # CD (step 8) sets API_IMAGE to the image CI pushed to ghcr.io; locally the image is built from source
+    image: ${API_IMAGE:-skysat-api:local}
     build:
       context: .
       dockerfile: api/Dockerfile
+      args:
+        TORCH_INDEX: ${TORCH_INDEX:-https://download.pytorch.org/whl/cpu}
     environment:
-      MLFLOW_TRACKING_URI: http://mlflow:5000
+      # Step 8: the team's shared MLflow (DagsHub) when it is set in .env, else the local one below
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
+      MLFLOW_TRACKING_USERNAME: ${MLFLOW_TRACKING_USERNAME:-}
+      MLFLOW_TRACKING_PASSWORD: ${MLFLOW_TRACKING_PASSWORD:-}
+      MODEL_RELOAD_SECONDS: ${MODEL_RELOAD_SECONDS:-10}
       DATABASE_URL: postgresql://skysat:${POSTGRES_PASSWORD:-skysat}@postgres:5432/skysat
     deploy:
       replicas: 3

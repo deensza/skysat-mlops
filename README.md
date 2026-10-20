@@ -19,13 +19,17 @@ Dataset: [Airline Passenger Satisfaction](https://www.kaggle.com/datasets/teejma
 - **Original dataset:** linked above; see its Kaggle page for its own licence.
 - The competition rules forbid redistributing the data, so it is **never committed, copied into Docker images, or used in CI**.
   Download it yourself into `data/` (see [data/README.md](data/README.md)); tests use small synthetic data instead.
-- Code for this competition stays inside the team; this repository is kept private while the competition is running.
+- This repository is public, which the rules allow: they forbid *private* sharing outside the team, not public sharing.
+  Code that is shared publicly must also be shared on the competition's Kaggle discussion forum or notebooks:
+  post a link to this repo in the competition's Discussion tab. The data and trained models are never in the repository.
+- Code: [MIT License](LICENSE) (an OSI-approved licence that allows commercial use, as the rules require for shared code).
 
 ## Project structure
 
 | Folder | Purpose |
 |---|---|
 | `data/` | Dataset files (downloaded, not committed) |
+| `docs/` | [Architecture](docs/architecture.md): how all the pieces fit together — start here |
 | `simulator/` | Sends passenger records to the API (normal and drift modes) |
 | `training/` | Training and retraining scripts, MLflow logging |
 | `api/` | FastAPI prediction service |
@@ -35,38 +39,38 @@ Dataset: [Airline Passenger Satisfaction](https://www.kaggle.com/datasets/teejma
 | `tests/` | Automated tests (pytest) |
 | `.github/workflows/` | CI/CD pipeline (GitHub Actions) |
 
-## Training on Kaggle (competition track)
-
-A separate, optional track for the Kaggle leaderboard. It uses the competition files, not the project pipeline below.
-The model is a PyTorch MLP ([training/train_torch.py](training/train_torch.py)).
-One-time: `pip install kaggle`, add your Kaggle API credentials, join the competition and accept its rules.
-
-```bash
-export KAGGLE_USERNAME=<your kaggle username>
-make kaggle-train   # pushes a private notebook, waits for it, downloads artifacts/kaggle/model.pt + submission.csv
-```
-
-The competition data stays on Kaggle; the notebook is private.
-
 ## Setup
 
-Requirements: Git, Docker Desktop, Python 3.12.
+The team uses Linux and macOS (Apple Silicon). You need Git, Docker (Docker Desktop on a Mac), `make` and
+[uv](https://docs.astral.sh/uv/):
+
+- macOS: `xcode-select --install` (gives git and make), then `brew install uv`
+- Linux: git, make and uv from your package manager (or uv's install script from its website)
+- Windows: not tested; use WSL2
 
 ```bash
-# macOS / Linux
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+make install          # .venv with Python 3.12 + the pinned packages (uv downloads Python 3.12 if needed)
+make install-train    # + PyTorch, the Kaggle CLI and psycopg (training, retraining, competition track)
+make test             # should end with "passed"
 ```
 
-```powershell
-# Windows (PowerShell)
-py -3.12 -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-```
+`make` uses `.venv` by itself; `source .venv/bin/activate` only if you want to run `python` directly.
+On Linux without an NVIDIA GPU, PyPI's PyTorch brings ~2 GB of CUDA libraries; the comment at the top of
+[requirements-train.txt](requirements-train.txt) shows the smaller CPU-only install. On a Mac PyPI's build is the
+right one.
 
 Then download the dataset as described in [data/README.md](data/README.md).
+
+Day to day, the Docker stack has shortcuts (`make help` lists everything):
+
+```bash
+make d-up        # start MLflow, PostgreSQL, 3 API copies, Nginx, Grafana in the background
+make d-ps        # what is running, and is it healthy
+make d-build     # after changing code: rebuild the images and restart what changed
+make d-logs      # follow the logs (one service: make d-logs SERVICE=api)
+make d-down      # stop everything; data is kept
+make d-wipe      # stop and delete the local data (asks first)
+```
 
 ## Step 2 – Data preparation and traffic simulator
 
@@ -114,9 +118,11 @@ python -m training.track --stub --stub-auc 0.97   # fake training: tries the reg
 ```
 
 - Each run logs the parameters, validation metrics, tags (`git_commit`, `purpose=training`) and `model/model.pt`.
-- **Quality gate:** a model is registered as `skysat-satisfaction` only if validation **ROC AUC ≥ 0.95**
-  (the LightGBM baseline reaches ~0.958).
-- The `champion` alias moves to the new version only if its ROC AUC is higher than the current champion's.
+- **Quality gate:** a model is registered as `skysat-satisfaction` only if validation **ROC AUC ≥ 0.95**.
+  Real models on this dataset score 0.98–0.996 (step 8), so the gate catches broken models, not merely weaker ones.
+- The `champion` alias moves to the new version only if its ROC AUC is higher than the current champion's,
+  **both measured on the same validation rows**: the champion is downloaded and re-scored, not judged by the number
+  stored when it was trained (that number may come from other rows, e.g. step 7's recent holdout).
   The API (step 4) loads `models:/skysat-satisfaction@champion`, so a better model goes live without a code change.
 - Runs and models are kept in the `mlflow-data` Docker volume. `docker compose down -v` deletes them.
 
@@ -218,6 +224,123 @@ Measured end to end with `docker compose up` (3 API copies), 2,000 passengers pe
 - Use a different `--seed` for traffic after retraining: the same seed sends the same passengers the model has just
   been trained on, and the recovery would look better than it is.
 
+## Step 8 – CI/CD and continuous training (CT)
+
+The map of all the pieces is in [docs/architecture.md](docs/architecture.md). Three automated loops:
+
+| Loop | Workflow | Runs on | When | What |
+|---|---|---|---|---|
+| **CI** | `ci.yml` → `test`, `image` | GitHub's servers | every push / pull request | pytest on **fake data** (incl. training all 5 model types), compose check, API image build |
+| **CT** | `ct.yml` → `train` | GitHub's servers | `make add-ct`, the *Run workflow* button, Mondays, new training code on `main` | download the dataset, train, register, promote the best: all in the **shared MLflow** |
+| **CD** | `ci.yml` → `deploy` | a team PC (self-hosted runner), optional | push to `main`, after CI | push image to `ghcr.io/<repo>-api`, pull it on the PC, `docker compose up -d`, smoke test |
+
+Drift retraining (step 7, `python -m training.retrain`) stays a command you run where the stack is running,
+because it needs that machine's prediction log; with the shared MLflow set in `.env` its model lands there too.
+
+### CT on GitHub, results in one shared MLflow
+
+No team PC has to be on. GitHub's run queue is the job queue and its machines are the workers:
+
+```bash
+make add-ct ARGS="--model random_forest"        # ask GitHub to train one model (mlp, logistic_regression, random_forest, gradient_boosting)
+make add-ct ARGS="--model mlp --rating-one-hot --epochs 30 --name mlp-30-epochs"
+make add-ct ARGS=--all                          # the 5 standard candidates
+make list-ct                                    # recent CT runs: queued / in progress / success / failure
+make ct-local ARGS="--model mlp --epochs 5"     # the same training on this computer (needs `make data`)
+make smoke                                      # what CD checks after a deploy: /health + /predict via Nginx
+```
+
+Every CT run ([training/ct.py](training/ct.py)) downloads the **original** Kaggle dataset (the one `make data`
+uses, not the competition data), trains each requested model on the same split, logs it to the team's MLflow on
+**DagsHub** (`purpose=ct`, `model_type`), registers it if ROC AUC ≥ 0.95 and makes it `champion` if it beats the
+current one. Both team members' APIs load the champion from that same MLflow, so everyone serves the same model.
+The data only lives on GitHub's temporary machine; it is never printed, uploaded or committed.
+
+The API serves scikit-learn models (`model.joblib`) as well as the MLP (`model.pt`); `GET /model` shows
+`model_type`.
+
+Measured on the team PC (Linux, CPU only) with the same training code, the 5 candidates on a fresh MLflow,
+original dataset (83,123 train / 20,781 validation rows):
+
+| Order | Model | Validation ROC AUC | Result |
+|---|---|---|---|
+| 1 | logistic_regression (one-hot ratings) | 0.9807 | version 1, champion |
+| 2 | random_forest | 0.9941 | version 2, champion |
+| 3 | gradient_boosting | 0.9952 | version 3, champion |
+| 4 | mlp | 0.9948 | version 4, champion stays |
+| 5 | mlp_rating_one_hot | 0.9955 | version 5, **champion** |
+
+- The top three are within 0.0007 of each other: about the size of the seed-to-seed noise measured earlier
+  (≤ 0.0005), so "best" here is partly luck.
+- `make ct-local ARGS="--model logistic_regression --rating-one-hot"` reproduces 0.9807 exactly (fixed seeds).
+- Before comparing, CT re-scores the champion on the same validation rows (`Champion (version 5) on the same rows:
+  roc_auc 0.9955`). Known limitation: those rows are the original, pre-storm passengers, so after a drift
+  retraining (step 7) a weekly CT round can still replace the storm-adapted model with one that is better on
+  normal passengers. Check `GET /model` after a CT round if you just retrained for drift.
+
+### One-time setup
+
+**DagsHub (the shared MLflow).** Check DagsHub's pages as you go; its menus may have moved.
+
+1. Both team members create a free DagsHub account.
+2. One of you creates a **private** DagsHub repository (e.g. `skysat-mlops`) and adds the other as a collaborator.
+   Private matters: only collaborators can see the runs and models. The free plan's limits at the time of writing:
+   2 collaborators and 100 tracked runs in a private project (a 5-model round uses 5).
+3. Its MLflow address is `https://dagshub.com/<owner>/<repo>.mlflow`. Each of you creates a DagsHub token and puts
+   the three `MLFLOW_TRACKING_*` lines from [.env.example](.env.example) into your own `.env`.
+4. **First check:** `make data` then `make ct-local ARGS="--model logistic_regression --rating-one-hot"`. It must end
+   with `registered as version 1` after `Version 1 is the new champion`. That proves DagsHub accepts runs, model
+   versions and the `champion` alias (which the API needs). If the alias step fails, stop and ask.
+
+**GitHub (repository owner, once):** Settings → Secrets and variables → Actions.
+
+| Kind | Name | Value |
+|---|---|---|
+| Variable | `MLFLOW_TRACKING_URI` | `https://dagshub.com/<owner>/<repo>.mlflow` |
+| Variable | `MLFLOW_TRACKING_USERNAME` | the DagsHub user whose token is below |
+| Secret | `MLFLOW_TRACKING_PASSWORD` | that DagsHub token |
+
+Secrets never appear in logs, and runs started by strangers' pull requests never receive them. GitHub only lets you
+start a workflow by hand once its file is on `main`, so merge first; after that `make add-ct CT_REF=<branch>`
+trains with another branch's code.
+
+**Optional, CD to a PC (self-hosted runner).** Only for a PC that is on when you push to `main`.
+
+1. On this public repo, first set Settings → Actions → General → *Fork pull request workflows from outside
+   collaborators* → **Require approval for all external contributors**, and never approve runs from strangers:
+   otherwise a stranger's pull request could edit a workflow to run code on that PC.
+2. Settings → Actions → Runners → **New self-hosted runner** (Linux x64), label `skysat`, install it as a service
+   (`sudo ./svc.sh install && sudo ./svc.sh start`). The runner user needs Docker without sudo.
+3. Set the repository variable `DEPLOY_TO_RUNNER` to `true`. Without it the `deploy` job is skipped.
+
+## Kaggle competition track
+
+A separate track for the leaderboard of [Playground S6E10](https://www.kaggle.com/competitions/playground-series-s6e10)
+(metric ROC AUC, 10 submissions per day, final deadline 2026-10-31 23:59 UTC). Separate because the competition
+files have other columns (no "Inflight service", True/False target) and must stay on the team's PCs, so this never
+runs on GitHub and never touches the API's model registry.
+
+```bash
+make submission                       # 5-fold CV + artifacts/kaggle/submission.csv (~1 min), logged to MLflow `skysat-kaggle`
+make submit MSG="hgb, 127 leaves"     # upload it (needs a Kaggle token in ~/.kaggle/access_token: Kaggle → Settings → API)
+make kaggle-scores                    # the team's submissions and their public leaderboard scores
+```
+
+[training/competition.py](training/competition.py): scikit-learn gradient boosting, 5-fold stratified
+cross-validation on the 699,635 competition train rows; the submission averages the 5 fold models' predictions.
+Settings chosen by CV ROC AUC (all runs in the file's docstring):
+
+| Setting | CV ROC AUC |
+|---|---|
+| scikit-learn defaults | 0.95767 ± 0.00063 |
+| + the original dataset as extra training rows (allowed external data) | 0.95727 (worse in all 5 folds) |
+| learning rate 0.05, up to 1000 rounds, 127 leaves (**default**) | **0.95853 ± 0.00053** |
+
+- Same settings → byte-identical submission (sha256 printed and logged), so a leaderboard score can always be traced
+  back to its MLflow run.
+- The public leaderboard scores only part of the test set; the private part decides. Choose by CV, not by chasing
+  the public score.
+
 ## Status
 
 - [x] Step 1 – Environment and repository skeleton
@@ -227,7 +350,7 @@ Measured end to end with `docker compose up` (3 API copies), 2,000 passengers pe
 - [x] Step 5 – Scaling and load test
 - [x] Step 6 – Prediction logging and monitoring
 - [x] Step 7 – Drift detection and retraining
-- [ ] Step 8 – CI/CD
+- [ ] Step 8 – CI/CD (code done; waiting for the DagsHub + GitHub setup, see step 8)
 - [ ] Step 9 – Demo scenario and documentation
 - [ ] Step 10 – Presentation
 

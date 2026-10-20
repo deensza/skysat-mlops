@@ -24,7 +24,6 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Literal
 
 import mlflow
@@ -37,7 +36,7 @@ from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from skysat import schema
-from training.train import load_bundle, predict_proba
+from training.train import load_bundle, model_file, predict_proba
 
 MODEL_NAME = "skysat-satisfaction"
 ALIAS = "champion"
@@ -78,7 +77,7 @@ class ServingModel:
             return
         with tempfile.TemporaryDirectory() as tmp:
             folder = mlflow.artifacts.download_artifacts(artifact_uri=version.source, dst_path=tmp)
-            bundle = load_bundle(Path(folder) / "model.pt")
+            bundle = load_bundle(model_file(folder))
         before = self.current[0] if self.current else "none"
         self.current = (version.version, version.run_id, bundle, datetime.now(timezone.utc).isoformat())
         log.info("Serving %s version %s (was %s)", MODEL_NAME, version.version, before)
@@ -190,6 +189,7 @@ def model_info():
         "name": MODEL_NAME,
         "alias": ALIAS,
         "version": version,
+        "model_type": bundle["meta"].get("params", {}).get("model", "mlp"),  # step 8: CT picks among 5 types
         "run_id": run_id,
         "loaded_at": loaded_at,
         "validation_metrics": bundle["meta"]["metrics"],

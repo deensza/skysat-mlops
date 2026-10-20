@@ -1,0 +1,64 @@
+# Continuous training (step 8), on GitHub's servers, so it runs while every team PC is off.
+# 1. downloads the ORIGINAL Kaggle dataset (teejmahal20/airline-passenger-satisfaction, the one `make data`
+#    uses; not the competition data). It is public: Kaggle allows downloading it without a login (checked
+#    2026-10-20). If that changes, add a secret KAGGLE_API_TOKEN and pass it to the download step.
+# 2. trains what was asked (training/ct.py), registers the models that pass the quality gate, promotes the best
+# 3. everything goes to the team's shared MLflow on DagsHub: runs, versions and the `champion` the APIs serve
+# The data only lives on the temporary GitHub machine and disappears with it: never printed, uploaded or committed.
+#
+# Start a run: `make add-ct ARGS="--model random_forest"` (or ARGS=--all), the "Run workflow" button in the
+# Actions tab, every Monday, and when training code lands on main. Runs wait in GitHub's queue.
+# Setup (repository owner, once): README step 8 – the variables/secrets used in `env:` below.
+name: CT
+
+on:
+  workflow_dispatch:
+    inputs:
+      args:
+        description: "What to train: --all, or e.g. --model random_forest, or --model mlp --rating-one-hot --epochs 30"
+        default: --all
+  schedule:
+    - cron: "0 4 * * 1"   # Mondays 04:00 UTC: the 5 standard candidates
+  push:
+    branches: [main]
+    paths: ["training/**", "skysat/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}
+      MLFLOW_TRACKING_USERNAME: ${{ vars.MLFLOW_TRACKING_USERNAME }}
+      MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+      CT_ARGS: ${{ inputs.args || '--all' }}  # read from env, never pasted into the script (no injection)
+    steps:
+      - name: Check the team settings exist
+        run: |
+          for name in MLFLOW_TRACKING_URI MLFLOW_TRACKING_USERNAME MLFLOW_TRACKING_PASSWORD; do
+            test -n "${!name}" || { echo "Missing $name: see README step 8 (repository variables and secrets)"; exit 1; }
+          done
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies (CPU-only PyTorch)
+        run: |
+          pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt kaggle==2.2.4
+
+      - name: Download the dataset
+        run: kaggle datasets download teejmahal20/airline-passenger-satisfaction -p data --unzip
+
+      - name: Prepare the data (step 2)
+        run: python -m training.prepare_data
+
+      - name: Train, register, promote
+        run: python -m training.ct $CT_ARGS
