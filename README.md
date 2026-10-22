@@ -30,6 +30,7 @@ Dataset: [Airline Passenger Satisfaction](https://www.kaggle.com/datasets/teejma
 |---|---|
 | `data/` | Dataset files (downloaded, not committed) |
 | `docs/` | [Architecture](docs/architecture.md): how all the pieces fit together — start here |
+| `demo/` | [3-minute demo](demo/README.md): storm → drift → retraining → recovery, all with `make` |
 | `simulator/` | Sends passenger records to the API (normal and drift modes) |
 | `training/` | Training and retraining scripts, MLflow logging |
 | `api/` | FastAPI prediction service |
@@ -313,6 +314,26 @@ trains with another branch's code.
    (`sudo ./svc.sh install && sudo ./svc.sh start`). The runner user needs Docker without sudo.
 3. Set the repository variable `DEPLOY_TO_RUNNER` to `true`. Without it the `deploy` job is skipped.
 
+## Step 9 – Demo scenario and documentation
+
+The 3-minute demo (a recorded video, after the slides) has three parts: the 5 CT models and the champion the
+quality gate picked (DagsHub), a new Kaggle submission and its score, and the drift story: **the model degrades,
+the system notices, retrains itself and recovers.** The drift part runs in a Docker project of its own with the
+DagsHub settings switched off on the command line, so it never touches the shared MLflow or your normal stack. Full guide: [demo/README.md](demo/README.md).
+
+```bash
+make simulate MODE=drift N=2000 SEED=2   # new: send passengers to the API on :8080 (steps 6-7)
+make retrain ARGS=--check-only           # new: drift check; without ARGS: retrain and promote if better
+```
+
+| Phase | Serving version | Accuracy (real answers) |
+|---|---|---|
+| Normal traffic | 1 | 96.25% |
+| Winter storm, before retraining | 1 | 91.75% |
+| Winter storm, after retraining (`SEED=2`) | 2 | 94.75% |
+
+`make retrain` uses the MLflow from `.env`: with the DagsHub lines set, a promotion changes the **team's** champion.
+
 ## Kaggle competition track
 
 A separate track for the leaderboard of [Playground S6E10](https://www.kaggle.com/competitions/playground-series-s6e10)
@@ -350,8 +371,8 @@ Settings chosen by CV ROC AUC (all runs in the file's docstring):
 - [x] Step 5 – Scaling and load test
 - [x] Step 6 – Prediction logging and monitoring
 - [x] Step 7 – Drift detection and retraining
-- [ ] Step 8 – CI/CD (code done; waiting for the DagsHub + GitHub setup, see step 8)
-- [ ] Step 9 – Demo scenario and documentation
+- [x] Step 8 – CI/CD and continuous training
+- [x] Step 9 – Demo scenario and documentation (video: record before the presentation)
 - [ ] Step 10 – Presentation
 
 ## Quick check
