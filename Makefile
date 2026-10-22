@@ -6,7 +6,7 @@
 #   make train          step 3a: train the model -> artifacts/model.pt
 #   make compare        compare the MLP with logistic regression and gradient boosting
 #   make graph          plot which features drive satisfaction -> artifacts/eda/*.png
-#   make add-ct ARGS=.. step 8: train on GitHub, e.g. ARGS="--model random_forest" or ARGS=--all (5 models)
+#   make add-ct ARGS=.. step 8: train on GitHub, e.g. ARGS="--model random_forest" or ARGS=--all (7 models)
 #   make list-ct        step 8: recent CT runs on GitHub (results: the shared MLflow)
 #   make ct-local ARGS= step 8: the same training on this computer
 #   make smoke          step 8: smoke-test the running stack (what CD runs after a deploy)
@@ -55,7 +55,7 @@ graph: ## plot feature weights and relationships from the competition zip -> art
 # CT_REF: the branch whose code trains (the workflow must exist there): make add-ct CT_REF=ml ARGS=--all
 CT_REF ?= main
 
-add-ct: ## step 8: train on GitHub: make add-ct ARGS="--model random_forest"  (ARGS=--all: the 5 candidates)
+add-ct: ## step 8: train on GitHub: make add-ct ARGS="--model random_forest"  (ARGS=--all: the 7 candidates)
 	gh workflow run ct.yml --ref $(CT_REF) -f args="$(ARGS)"
 	@echo "Queued on GitHub. Follow it: make list-ct   Results: the shared MLflow (runs, versions, champion)"
 

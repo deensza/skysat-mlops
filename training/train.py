@@ -23,10 +23,12 @@ import joblib
 import numpy as np
 import pandas as pd
 import torch
+from lightgbm import LGBMClassifier
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
 from torch import nn
+from xgboost import XGBClassifier
 
 from skysat import schema
 from skysat.data import PROCESSED_DIR
@@ -56,6 +58,12 @@ SKLEARN_MODELS = {
     "random_forest": lambda seed: RandomForestClassifier(n_estimators=200, min_samples_leaf=3, n_jobs=-1,
                                                          random_state=seed),
     "gradient_boosting": lambda seed: HistGradientBoostingClassifier(random_state=seed),
+    # Common library-default-style settings, fixed before training; no early stopping (that would tune on validation).
+    "lightgbm": lambda seed: LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=31, subsample=0.8,
+                                            subsample_freq=1, colsample_bytree=0.8, n_jobs=-1, random_state=seed,
+                                            verbose=-1),
+    "xgboost": lambda seed: XGBClassifier(n_estimators=500, learning_rate=0.05, max_depth=6, subsample=0.8,
+                                          colsample_bytree=0.8, tree_method="hist", n_jobs=-1, random_state=seed),
 }
 
 

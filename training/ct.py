@@ -5,7 +5,7 @@ Results go to the team's shared MLflow on DagsHub, so everyone sees the same run
 
     make add-ct ARGS="--model random_forest"      # ask GitHub to train it (waits in GitHub's run queue)
     make add-ct ARGS="--model mlp --rating-one-hot --epochs 30 --name mlp-30-epochs"
-    make add-ct ARGS=--all                        # the 5 standard candidates
+    make add-ct ARGS=--all                        # the 7 standard candidates
     make list-ct                                  # recent CT runs on GitHub
     make ct-local ARGS="--model mlp --epochs 5"   # the same training on this computer (needs `make data`)
 
@@ -31,12 +31,14 @@ from training.train import DEFAULT_PARAMS, SKLEARN_MODELS, run_training
 
 MODELS = ["mlp", *SKLEARN_MODELS]
 
-# The 5 standard candidates (--all). Linear models cannot learn the step-shaped ratings, so logistic
+# The 7 standard candidates (--all). Linear models cannot learn the step-shaped ratings, so logistic
 # regression gets rating_one_hot; the trees split on the raw 0-5 values by themselves.
 CANDIDATES = {
     "logistic_regression": {"model": "logistic_regression", "rating_one_hot": True},
     "random_forest": {"model": "random_forest"},
     "gradient_boosting": {"model": "gradient_boosting"},
+    "lightgbm": {"model": "lightgbm"},
+    "xgboost": {"model": "xgboost"},
     "mlp": {"model": "mlp"},
     "mlp_rating_one_hot": {"model": "mlp", "rating_one_hot": True},
 }
@@ -45,7 +47,7 @@ CANDIDATES = {
 def parse_jobs(argv: list[str] | None = None) -> dict:
     """Command line -> {job name: overrides of DEFAULT_PARAMS}."""
     parser = argparse.ArgumentParser(description="Train models, register the good ones, promote the best")
-    parser.add_argument("--all", action="store_true", help="the 5 standard candidates")
+    parser.add_argument("--all", action="store_true", help="the 7 standard candidates")
     parser.add_argument("--model", choices=MODELS, help="one model type")
     parser.add_argument("--name", help="label for the run (default: the model name)")
     parser.add_argument("--rating-one-hot", action="store_true", help="add one-hot columns for every 0-5 rating")

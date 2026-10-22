@@ -1,4 +1,4 @@
-"""Checks for step 8 (continuous training) on fake data: the 5 standard candidates train, save and predict
+"""Checks for step 8 (continuous training) on fake data: the 7 standard candidates train, save and predict
 like the API does, and the command line turns into the right training jobs."""
 
 from pathlib import Path
@@ -22,7 +22,7 @@ def data():
 
 
 def test_every_candidate_trains_and_loads_like_the_api_does(data, tmp_path):
-    assert len(CANDIDATES) == 5
+    assert len(CANDIDATES) == 7
     train, val = data
     for name, params in CANDIDATES.items():
         path, metrics = run_training(train, val, {**params, "epochs": 5, "batch_size": 128}, tmp_path / name)
@@ -43,7 +43,7 @@ def test_command_line_becomes_training_jobs():
         "mlp-30": {"model": "mlp", "rating_one_hot": True, "epochs": 30}}
 
 
-@pytest.mark.parametrize("argv", [[], ["--all", "--model", "mlp"], ["--model", "xgboost"],
+@pytest.mark.parametrize("argv", [[], ["--all", "--model", "mlp"], ["--model", "catboost"],
                                   ["--model", "mlp", "--drop-features", "gendr"]])
 def test_bad_command_lines_are_rejected(argv):
     with pytest.raises(SystemExit):

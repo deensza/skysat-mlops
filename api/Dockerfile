@@ -5,6 +5,9 @@ FROM python:3.12.15-slim
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 
+# OpenMP runtime: LightGBM loads libgomp.so.1 from the system (the slim image does not have it)
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
+
 # PyTorch wheel source. Default: CPU-only (the plain PyPI wheel on Linux x86 also pulls ~2 GB of CUDA
 # libraries). To use another one on your machine set TORCH_INDEX in .env (see .env.example).
 ARG TORCH_INDEX=https://download.pytorch.org/whl/cpu
