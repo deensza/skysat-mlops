@@ -113,3 +113,15 @@ compose-check: ## validate docker-compose.yml (all profiles)
 	docker compose --profile loadtest config --quiet
 
 ci: test compose-check ## same two checks as the GitHub Actions workflow
+
+# Steps 6-7 from make (also the step 9 demo, see demo/README.md): send traffic to the running stack, then retrain
+.PHONY: simulate retrain
+MODE ?= normal
+N ?= 2000
+SEED ?= 0
+
+simulate: ## steps 6-7: send passengers to the API on :8080: make simulate MODE=drift N=2000 SEED=2
+	$(PY) -m simulator.simulate generate --mode $(MODE) --n $(N) --seed $(SEED) --url http://localhost:8080/predict
+
+retrain: ## step 7: drift check, retrain, promote if better (uses MLFLOW_* from .env!); ARGS=--check-only to only measure
+	$(PY) -m training.retrain $(ARGS)
