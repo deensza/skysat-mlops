@@ -24,7 +24,8 @@ def data():
 def test_every_candidate_trains_and_loads_like_the_api_does(data, tmp_path):
     assert len(CANDIDATES) == 8
     train, val = data
-    for name, params in CANDIDATES.items():
+    on_demand = {m: {"model": m} for m in ("extra_trees", "decision_tree", "knn")}  # --model only
+    for name, params in {**CANDIDATES, **on_demand}.items():
         path, metrics = run_training(train, val, {**params, "epochs": 5, "batch_size": 128}, tmp_path / name)
         assert metrics["roc_auc"] > 0.8, name
         bundle = load_bundle(model_file(Path(path).parent))

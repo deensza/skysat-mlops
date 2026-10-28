@@ -24,9 +24,11 @@ import joblib
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.ensemble import ExtraTreesClassifier, HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
 from torch import nn
 
 from skysat import schema
@@ -63,6 +65,12 @@ SKLEARN_MODELS = {
         early_stopping=False, random_state=seed),
     "lightgbm": lambda seed: _lightgbm(seed),
     "xgboost": lambda seed: _xgboost(seed),
+    # On request only (--model), not CT candidates: none beats the candidates above (README, step 8).
+    # extra_trees: 100 trees, leaf >= 10 keep the file at ~35 MB (200 trees, leaf 3: 160 MB for +0.002 ROC AUC)
+    "extra_trees": lambda seed: ExtraTreesClassifier(n_estimators=100, min_samples_leaf=10, n_jobs=-1,
+                                                     random_state=seed),
+    "decision_tree": lambda seed: DecisionTreeClassifier(min_samples_leaf=20, random_state=seed),
+    "knn": lambda seed: KNeighborsClassifier(n_neighbors=25, weights="distance", n_jobs=-1),
 }
 
 

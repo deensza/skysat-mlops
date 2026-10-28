@@ -33,6 +33,7 @@ MODELS = ["mlp", *SKLEARN_MODELS]
 
 # The 8 standard candidates (--all). Linear models cannot learn the step-shaped ratings, so logistic
 # regression gets rating_one_hot; the trees split on the raw 0-5 values by themselves.
+# extra_trees, decision_tree and knn train only with --model (they never beat these).
 CANDIDATES = {
     "logistic_regression": {"model": "logistic_regression", "rating_one_hot": True},
     "random_forest": {"model": "random_forest"},

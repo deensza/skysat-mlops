@@ -172,7 +172,8 @@ Your idea of a shared job queue is still the design, it is just hosted: GitHub's
 machines are the workers, so there is nothing to start, stop or keep running.
 
 The 8 standard candidates: logistic regression (with one-hot ratings), random forest, gradient boosting
-(default and tuned), LightGBM, XGBoost, MLP, MLP with one-hot ratings.
+(default and tuned), LightGBM, XGBoost, MLP, MLP with one-hot ratings. On request only (`--model`):
+extra trees, decision tree, k-nearest neighbours.
 
 ## 8. Where things live
 
