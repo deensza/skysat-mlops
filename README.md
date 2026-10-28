@@ -243,7 +243,8 @@ because it needs that machine's prediction log; with the shared MLflow set in `.
 No team PC has to be on. GitHub's run queue is the job queue and its machines are the workers:
 
 ```bash
-make add-ct ARGS="--model random_forest"        # ask GitHub to train one model (mlp, logistic_regression, random_forest, gradient_boosting)
+make add-ct ARGS="--model random_forest"        # ask GitHub to train one model (mlp, logistic_regression, random_forest,
+                                                # gradient_boosting[_tuned], lightgbm, xgboost, extra_trees, decision_tree, knn)
 make add-ct ARGS="--model mlp --rating-one-hot --epochs 30 --name mlp-30-epochs"
 make add-ct ARGS=--all                          # the 8 standard candidates
 make list-ct                                    # recent CT runs: queued / in progress / success / failure
@@ -277,6 +278,10 @@ original dataset (83,123 train / 20,781 validation rows):
   gradient boosting 0.9951 → **0.9958** (`gradient_boosting_tuned`, 72 settings); LightGBM 0.9956, XGBoost 0.9957
   and MLP 0.9956 did not beat their fixed settings by more than noise. An equal-weight average of the four best
   scored 0.9960, but the API serves one model, so it is not a CT candidate.
+- On request only (`--model`), same split: extra_trees 0.9912 (100 trees, leaf ≥ 10: 35 MB instead of 160 MB),
+  decision_tree 0.9883, knn 0.9803 (25 neighbours). Naive Bayes was tried and left out: 0.9227 fails the 0.95 gate.
+- macOS only: PyTorch and LightGBM/XGBoost bring different OpenMP runtimes and crash together when both run
+  multi-threaded, so on a Mac they use one thread ([training/__init__.py](training/__init__.py)). Linux is unaffected.
 - The top three are within 0.0007 of each other: about the size of the seed-to-seed noise measured earlier
   (≤ 0.0005), so "best" here is partly luck.
 - `make ct-local ARGS="--model logistic_regression --rating-one-hot"` reproduces 0.9807 exactly (fixed seeds).

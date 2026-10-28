@@ -17,15 +17,18 @@ produced the reported metrics.
 """
 
 import argparse
+import sys
 from pathlib import Path
 
 import joblib
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.ensemble import ExtraTreesClassifier, HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
 from torch import nn
 
 from skysat import schema
@@ -62,21 +65,30 @@ SKLEARN_MODELS = {
         early_stopping=False, random_state=seed),
     "lightgbm": lambda seed: _lightgbm(seed),
     "xgboost": lambda seed: _xgboost(seed),
+    # On request only (--model), not CT candidates: none beats the candidates above (README, step 8).
+    # extra_trees: 100 trees, leaf >= 10 keep the file at ~35 MB (200 trees, leaf 3: 160 MB for +0.002 ROC AUC)
+    "extra_trees": lambda seed: ExtraTreesClassifier(n_estimators=100, min_samples_leaf=10, n_jobs=-1,
+                                                     random_state=seed),
+    "decision_tree": lambda seed: DecisionTreeClassifier(min_samples_leaf=20, random_state=seed),
+    "knn": lambda seed: KNeighborsClassifier(n_neighbors=25, weights="distance", n_jobs=-1),
 }
 
 
 # LightGBM and XGBoost are imported only when one is trained, so code that never uses them does not need them.
+# macOS: after PyTorch has run, multi-threaded LightGBM / XGBoost crash the process (two OpenMP runtimes, see
+# training/__init__.py), so they train on one thread there. Linux (CI, GitHub CT) uses every core.
+_BOOST_JOBS = 1 if sys.platform == "darwin" else -1
 # Common library-default-style settings, fixed before training; no early stopping (that would tune on validation).
 def _lightgbm(seed: int):
     from lightgbm import LGBMClassifier
     return LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=31, subsample=0.8, subsample_freq=1,
-                          colsample_bytree=0.8, n_jobs=-1, random_state=seed, verbose=-1)
+                          colsample_bytree=0.8, n_jobs=_BOOST_JOBS, random_state=seed, verbose=-1)
 
 
 def _xgboost(seed: int):
     from xgboost import XGBClassifier
     return XGBClassifier(n_estimators=500, learning_rate=0.05, max_depth=6, subsample=0.8, colsample_bytree=0.8,
-                         tree_method="hist", n_jobs=-1, random_state=seed)
+                         tree_method="hist", n_jobs=_BOOST_JOBS, random_state=seed)
 
 
 def to_matrix(df: pd.DataFrame, rating_one_hot: bool = False, drop_features=()) -> np.ndarray:
