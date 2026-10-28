@@ -56,7 +56,27 @@ SKLEARN_MODELS = {
     "random_forest": lambda seed: RandomForestClassifier(n_estimators=200, min_samples_leaf=3, n_jobs=-1,
                                                          random_state=seed),
     "gradient_boosting": lambda seed: HistGradientBoostingClassifier(random_state=seed),
+    # Tuned by a 72-setting random search scored with 5-fold CV on train.csv only (validation.csv not used).
+    "gradient_boosting_tuned": lambda seed: HistGradientBoostingClassifier(
+        max_iter=1000, learning_rate=0.02, max_leaf_nodes=127, min_samples_leaf=20, l2_regularization=10.0,
+        early_stopping=False, random_state=seed),
+    "lightgbm": lambda seed: _lightgbm(seed),
+    "xgboost": lambda seed: _xgboost(seed),
 }
+
+
+# LightGBM and XGBoost are imported only when one is trained, so code that never uses them does not need them.
+# Common library-default-style settings, fixed before training; no early stopping (that would tune on validation).
+def _lightgbm(seed: int):
+    from lightgbm import LGBMClassifier
+    return LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=31, subsample=0.8, subsample_freq=1,
+                          colsample_bytree=0.8, n_jobs=-1, random_state=seed, verbose=-1)
+
+
+def _xgboost(seed: int):
+    from xgboost import XGBClassifier
+    return XGBClassifier(n_estimators=500, learning_rate=0.05, max_depth=6, subsample=0.8, colsample_bytree=0.8,
+                         tree_method="hist", n_jobs=-1, random_state=seed)
 
 
 def to_matrix(df: pd.DataFrame, rating_one_hot: bool = False, drop_features=()) -> np.ndarray:

@@ -141,8 +141,8 @@ flowchart LR
 
 | Loop | Question it answers | File |
 |---|---|---|
-| **CI** – continuous integration | "Does the code still work?" Tests on fake data, incl. training all 5 model types | [.github/workflows/ci.yml](../.github/workflows/ci.yml) `test`, `image` |
-| **CT** – continuous training | "Is the best possible model serving?" Trains what you ask for (or the 5 candidates) | [.github/workflows/ct.yml](../.github/workflows/ct.yml) |
+| **CI** – continuous integration | "Does the code still work?" Tests on fake data, incl. training all 8 model types | [.github/workflows/ci.yml](../.github/workflows/ci.yml) `test`, `image` |
+| **CT** – continuous training | "Is the best possible model serving?" Trains what you ask for (or the 8 candidates) | [.github/workflows/ct.yml](../.github/workflows/ct.yml) |
 | **CD** – continuous deployment | "Is the newest code running?" Pushes the API image; a team PC with a runner pulls it | [ci.yml](../.github/workflows/ci.yml) `deploy` (optional) |
 
 **Where the data is:** the pipeline trains on the **original** Kaggle dataset
@@ -159,7 +159,7 @@ and you start the new code yourself with `docker compose up -d --build`.
 ```bash
 make add-ct ARGS="--model random_forest"        # GitHub trains one model
 make add-ct ARGS="--model mlp --rating-one-hot --epochs 30 --name mlp-30-epochs"
-make add-ct ARGS=--all                          # the 5 standard candidates
+make add-ct ARGS=--all                          # the 8 standard candidates
 make list-ct                                    # recent CT runs: queued / in progress / success / failure
 make ct-local ARGS="--model mlp --epochs 5"     # the same training on this computer (needs make data)
 ```
@@ -171,8 +171,8 @@ code produced which model.
 Your idea of a shared job queue is still the design, it is just hosted: GitHub's run queue is the queue and its
 machines are the workers, so there is nothing to start, stop or keep running.
 
-The 5 standard candidates: logistic regression (with one-hot ratings), random forest, gradient boosting, MLP,
-MLP with one-hot ratings.
+The 8 standard candidates: logistic regression (with one-hot ratings), random forest, gradient boosting
+(default and tuned), LightGBM, XGBoost, MLP, MLP with one-hot ratings.
 
 ## 8. Where things live
 

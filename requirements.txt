@@ -1,4 +1,9 @@
 numpy==2.1.3
 pandas==2.2.3
 scikit-learn==1.5.2
+lightgbm==4.7.0
+# XGBoost: the CPU-only build on Linux (the plain Linux wheel also pulls ~200 MB of NVIDIA GPU libraries);
+# xgboost-cpu has no macOS wheels, so other systems use the plain package (CPU-only there anyway).
+xgboost-cpu==3.4.1; sys_platform == "linux"
+xgboost==3.4.1; sys_platform != "linux"
 mlflow==3.17.1

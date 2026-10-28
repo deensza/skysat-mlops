@@ -45,7 +45,7 @@ Dataset: [Airline Passenger Satisfaction](https://www.kaggle.com/datasets/teejma
 The team uses Linux and macOS (Apple Silicon). You need Git, Docker (Docker Desktop on a Mac), `make` and
 [uv](https://docs.astral.sh/uv/):
 
-- macOS: `xcode-select --install` (gives git and make), then `brew install uv`
+- macOS: `xcode-select --install` (gives git and make), then `brew install uv libomp` (libomp: OpenMP, needed by LightGBM)
 - Linux: git, make and uv from your package manager (or uv's install script from its website)
 - Windows: not tested; use WSL2
 
@@ -231,7 +231,7 @@ The map of all the pieces is in [docs/architecture.md](docs/architecture.md). Th
 
 | Loop | Workflow | Runs on | When | What |
 |---|---|---|---|---|
-| **CI** | `ci.yml` → `test`, `image` | GitHub's servers | every push / pull request | pytest on **fake data** (incl. training all 5 model types), compose check, API image build |
+| **CI** | `ci.yml` → `test`, `image` | GitHub's servers | every push / pull request | pytest on **fake data** (incl. training all 8 model types), compose check, API image build |
 | **CT** | `ct.yml` → `train` | GitHub's servers | `make add-ct`, the *Run workflow* button, Mondays, new training code on `main` | download the dataset, train, register, promote the best: all in the **shared MLflow** |
 | **CD** | `ci.yml` → `deploy` | a team PC (self-hosted runner), optional | push to `main`, after CI | push image to `ghcr.io/<repo>-api`, pull it on the PC, `docker compose up -d`, smoke test |
 
@@ -245,7 +245,7 @@ No team PC has to be on. GitHub's run queue is the job queue and its machines ar
 ```bash
 make add-ct ARGS="--model random_forest"        # ask GitHub to train one model (mlp, logistic_regression, random_forest, gradient_boosting)
 make add-ct ARGS="--model mlp --rating-one-hot --epochs 30 --name mlp-30-epochs"
-make add-ct ARGS=--all                          # the 5 standard candidates
+make add-ct ARGS=--all                          # the 8 standard candidates
 make list-ct                                    # recent CT runs: queued / in progress / success / failure
 make ct-local ARGS="--model mlp --epochs 5"     # the same training on this computer (needs `make data`)
 make smoke                                      # what CD checks after a deploy: /health + /predict via Nginx
@@ -271,6 +271,12 @@ original dataset (83,123 train / 20,781 validation rows):
 | 4 | mlp | 0.9948 | version 4, champion stays |
 | 5 | mlp_rating_one_hot | 0.9955 | version 5, **champion** |
 
+- LightGBM and XGBoost were added later (fixed settings in `training/train.py`, chosen before training). Same data,
+  3 seeds each: lightgbm 0.9957, xgboost 0.9955 (mean; seed-to-seed spread ≤ 0.0001). The 5 above reproduce
+  exactly. Random searches scored by 5-fold CV on train.csv only (validation used once, for the winner):
+  gradient boosting 0.9951 → **0.9958** (`gradient_boosting_tuned`, 72 settings); LightGBM 0.9956, XGBoost 0.9957
+  and MLP 0.9956 did not beat their fixed settings by more than noise. An equal-weight average of the four best
+  scored 0.9960, but the API serves one model, so it is not a CT candidate.
 - The top three are within 0.0007 of each other: about the size of the seed-to-seed noise measured earlier
   (≤ 0.0005), so "best" here is partly luck.
 - `make ct-local ARGS="--model logistic_regression --rating-one-hot"` reproduces 0.9807 exactly (fixed seeds).
