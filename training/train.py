@@ -17,6 +17,7 @@ produced the reported metrics.
 """
 
 import argparse
+import sys
 from pathlib import Path
 
 import joblib
@@ -66,17 +67,20 @@ SKLEARN_MODELS = {
 
 
 # LightGBM and XGBoost are imported only when one is trained, so code that never uses them does not need them.
+# macOS: after PyTorch has run, multi-threaded LightGBM / XGBoost crash the process (two OpenMP runtimes, see
+# training/__init__.py), so they train on one thread there. Linux (CI, GitHub CT) uses every core.
+_BOOST_JOBS = 1 if sys.platform == "darwin" else -1
 # Common library-default-style settings, fixed before training; no early stopping (that would tune on validation).
 def _lightgbm(seed: int):
     from lightgbm import LGBMClassifier
     return LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=31, subsample=0.8, subsample_freq=1,
-                          colsample_bytree=0.8, n_jobs=-1, random_state=seed, verbose=-1)
+                          colsample_bytree=0.8, n_jobs=_BOOST_JOBS, random_state=seed, verbose=-1)
 
 
 def _xgboost(seed: int):
     from xgboost import XGBClassifier
     return XGBClassifier(n_estimators=500, learning_rate=0.05, max_depth=6, subsample=0.8, colsample_bytree=0.8,
-                         tree_method="hist", n_jobs=-1, random_state=seed)
+                         tree_method="hist", n_jobs=_BOOST_JOBS, random_state=seed)
 
 
 def to_matrix(df: pd.DataFrame, rating_one_hot: bool = False, drop_features=()) -> np.ndarray:
