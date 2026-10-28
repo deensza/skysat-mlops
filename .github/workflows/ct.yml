@@ -18,7 +18,7 @@ on:
         description: "What to train: --all, or e.g. --model random_forest, or --model mlp --rating-one-hot --epochs 30"
         default: --all
   schedule:
-    - cron: "0 4 * * 1"   # Mondays 04:00 UTC: the 7 standard candidates
+    - cron: "0 4 * * 1"   # Mondays 04:00 UTC: the 8 standard candidates
   push:
     branches: [main]
     paths: ["training/**", "skysat/**"]
