@@ -33,3 +33,9 @@ kaggle.json
 Thumbs.db
 .vscode/
 .idea/
+
+# Videos (too large for git: upload them and link instead, see demo/video.md)
+*.mp4
+*.mov
+*.mkv
+*.webm
