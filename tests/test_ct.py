@@ -3,6 +3,7 @@ like the API does, and the command line turns into the right training jobs."""
 
 from pathlib import Path
 
+import mlflow
 import pytest
 
 pytest.importorskip("torch")
@@ -10,7 +11,8 @@ pytest.importorskip("torch")
 from skysat import schema
 from skysat.data import clean
 from tests.test_data_and_drift import make_raw
-from training.ct import CANDIDATES, parse_jobs
+from tests.test_track import local_mlflow  # noqa: F401 (fixture)
+from training.ct import CANDIDATES, parse_jobs, train_and_register
 from training.train import load_bundle, model_file, predict_proba, run_training
 
 
@@ -49,3 +51,21 @@ def test_command_line_becomes_training_jobs():
 def test_bad_command_lines_are_rejected(argv):
     with pytest.raises(SystemExit):
         parse_jobs(argv)
+
+
+def test_runs_log_the_real_settings_the_training_curve_and_plots(data, local_mlflow):
+    client, experiment = local_mlflow
+    mlflow.set_experiment(experiment_id=experiment)
+    train, val = data
+    for name, params in {"lgbm": {"model": "lightgbm"}, "net": {"model": "mlp", "epochs": 3, "batch_size": 128}}.items():
+        train_and_register(client, train, val, name, params, champion_auc=None)
+    runs = {r.info.run_name: r for r in client.search_runs([experiment])}
+
+    lgbm = runs["ct-lgbm"].data.params
+    assert lgbm["model.n_estimators"] == "500" and "epochs" not in lgbm  # its own settings, not the MLP's
+    net = runs["ct-net"]
+    assert "epochs" in net.data.params and not any(k.startswith("model.") for k in net.data.params)
+    assert [m.step for m in client.get_metric_history(net.info.run_id, "train_loss")] == [1, 2, 3]
+    for run in runs.values():
+        plots = {a.path for a in client.list_artifacts(run.info.run_id, "plots")}
+        assert plots == {"plots/roc_curve.png", "plots/confusion_matrix.png"}

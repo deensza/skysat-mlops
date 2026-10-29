@@ -26,8 +26,9 @@ import mlflow
 from mlflow import MlflowClient
 
 from skysat import schema
+from training.insight import log_insights, model_settings, run_params
 from training.track import EXPERIMENT, ROC_AUC_THRESHOLD, champion_auc_on, git_commit, load_data, register
-from training.train import DEFAULT_PARAMS, SKLEARN_MODELS, run_training
+from training.train import DEFAULT_PARAMS, SKLEARN_MODELS, load_bundle, run_training
 
 MODELS = ["mlp", *SKLEARN_MODELS]
 
@@ -78,11 +79,14 @@ def train_and_register(client: MlflowClient, train_df, val_df, name: str, overri
     params = {**DEFAULT_PARAMS, **overrides}
     tags = {"git_commit": git_commit(), "purpose": "ct", "model_type": params["model"]}
     with tempfile.TemporaryDirectory() as tmp, mlflow.start_run(run_name=f"ct-{name}", tags=tags) as run:
-        mlflow.log_params(params)
+        mlflow.log_params(run_params(params))  # only the settings this model type uses
         mlflow.log_params({"train_rows": len(train_df), "validation_rows": len(val_df)})
         path, metrics = run_training(train_df, val_df, params, Path(tmp))
         mlflow.log_metrics(metrics)
         mlflow.log_artifact(path, artifact_path="model")
+        bundle = load_bundle(path)
+        mlflow.log_params(model_settings(bundle))  # the fitted model's own settings (trees, depth, ...)
+        log_insights(bundle, val_df)  # training curve (MLP), ROC curve, confusion matrix
         version = register(client, run, metrics["roc_auc"], champion_auc=champion_auc)
     return metrics["roc_auc"], version
 

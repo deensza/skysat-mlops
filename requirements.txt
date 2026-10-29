@@ -7,3 +7,4 @@ lightgbm==4.7.0
 xgboost-cpu==3.4.1; sys_platform == "linux"
 xgboost==3.4.1; sys_platform != "linux"
 mlflow==3.17.1
+matplotlib==3.11.2  # training plots in MLflow (training/insight.py); not needed by the API
