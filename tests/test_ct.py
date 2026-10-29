@@ -58,7 +58,9 @@ def test_runs_log_the_real_settings_the_training_curve_and_plots(data, local_mlf
     client, experiment = local_mlflow
     mlflow.set_experiment(experiment_id=experiment)
     train, val = data
-    for name, params in {"lgbm": {"model": "lightgbm"}, "net": {"model": "mlp", "epochs": 3, "batch_size": 128}}.items():
+    jobs = {"lgbm": {"model": "lightgbm"}, "net": {"model": "mlp", "epochs": 3, "batch_size": 128},
+            "ens": {"model": "ensemble"}}
+    for name, params in jobs.items():
         train_and_register(client, train, val, name, params, champion_auc=None)
     runs = {r.info.run_name: r for r in client.search_runs([experiment])}
 
@@ -67,14 +69,22 @@ def test_runs_log_the_real_settings_the_training_curve_and_plots(data, local_mlf
     net = runs["ct-net"]
     assert "epochs" in net.data.params and not any(k.startswith("model.") for k in net.data.params)
     assert [m.step for m in client.get_metric_history(net.info.run_id, "train_loss")] == [1, 2, 3]
-    for run in runs.values():
-        plots = {a.path for a in client.list_artifacts(run.info.run_id, "plots")}
-        assert plots == {"plots/roc_curve.png", "plots/confusion_matrix.png"}
+    ens = runs["ct-ens"]
+    assert "lightgbm_tuned.model.num_leaves" in ens.data.params and ens.data.params["mlp_tuned.epochs"] == "20"
+    assert len(client.get_metric_history(ens.info.run_id, "mlp_tuned.train_loss")) == 20  # the member's curve
+    common = {"roc_curve", "precision_recall", "calibration", "confusion_matrix", "feature_importance"}
+    for name, run in runs.items():
+        artifacts = {a.path for a in client.list_artifacts(run.info.run_id)}
+        assert {"report.md", "plots", "tables", "model"} <= artifacts, name
+        plots = {a.path.split("/")[1][:-4] for a in client.list_artifacts(run.info.run_id, "plots")}
+        assert plots == common | ({"train_loss"} if name != "ct-lgbm" else set()), name
+        tables = {a.path for a in client.list_artifacts(run.info.run_id, "tables")}
+        assert tables == {"tables/feature_importance.csv", "tables/metrics_by_group.csv"}, name
 
     # every run is also an MLflow 3 logged model (the experiment's Models tab), and the registry version points to
     # it: the champion downloads through that source exactly as the API does
     logged = client.search_logged_models(experiment_ids=[experiment])
-    assert sorted(m.name for m in logged) == ["ct-lgbm", "ct-net"]
+    assert sorted(m.name for m in logged) == ["ct-ens", "ct-lgbm", "ct-net"]
     assert all(m.metrics and m.params.get("model") for m in logged)
     champion = client.get_model_version_by_alias("skysat-satisfaction", "champion")
     assert champion.source.startswith("models:/m-")
