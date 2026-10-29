@@ -223,6 +223,7 @@ def run_training(train_df: pd.DataFrame, val_df: pd.DataFrame, params: dict | No
     loss_fn = nn.BCEWithLogitsLoss()
 
     print(f"device: {device} | train rows: {len(Xt):,} | validation rows: {len(Xv):,} | features: {Xt.shape[1]}")
+    train_loss = []  # one value per epoch: the training curve (logged to MLflow by training.insight)
     for epoch in range(p["epochs"]):
         model.train()
         perm = torch.randperm(len(Xt), device=device)
@@ -235,11 +236,13 @@ def run_training(train_df: pd.DataFrame, val_df: pd.DataFrame, params: dict | No
             opt.step()
             sched.step()
             total += loss.item() * len(idx)
-        print(f"  epoch {epoch + 1}/{p['epochs']}  train loss {total / len(Xt):.4f}")
+        train_loss.append(total / len(Xt))
+        print(f"  epoch {epoch + 1}/{p['epochs']}  train loss {train_loss[-1]:.4f}")
 
     metrics = _metrics(y_val, _predict(model, Xv))
 
-    meta.update({"hidden": p["hidden"], "dropout": p["dropout"], "n_in": int(Xt.shape[1]), "metrics": metrics})
+    meta.update({"hidden": p["hidden"], "dropout": p["dropout"], "n_in": int(Xt.shape[1]), "metrics": metrics,
+                 "train_loss": train_loss})
     path = out_dir / "model.pt"
     torch.save({"state_dict": model.cpu().state_dict(), "meta": meta}, path)
     return str(path), metrics
