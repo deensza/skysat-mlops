@@ -5,7 +5,7 @@ Results go to the team's shared MLflow on DagsHub, so everyone sees the same run
 
     make add-ct ARGS="--model random_forest"      # ask GitHub to train it (waits in GitHub's run queue)
     make add-ct ARGS="--model mlp --rating-one-hot --epochs 30 --name mlp-30-epochs"
-    make add-ct ARGS=--all                        # the 8 standard candidates
+    make add-ct ARGS=--all                        # the 9 standard candidates
     make list-ct                                  # recent CT runs on GitHub
     make ct-local ARGS="--model mlp --epochs 5"   # the same training on this computer (needs `make data`)
 
@@ -30,9 +30,9 @@ from training.insight import log_insights, model_settings, run_params
 from training.track import EXPERIMENT, ROC_AUC_THRESHOLD, champion_auc_on, git_commit, load_data, register
 from training.train import DEFAULT_PARAMS, SKLEARN_MODELS, load_bundle, run_training
 
-MODELS = ["mlp", *SKLEARN_MODELS]
+MODELS = ["mlp", "ensemble", *SKLEARN_MODELS]
 
-# The 8 standard candidates (--all). Linear models cannot learn the step-shaped ratings, so logistic
+# The 9 standard candidates (--all). Linear models cannot learn the step-shaped ratings, so logistic
 # regression gets rating_one_hot; the trees split on the raw 0-5 values by themselves.
 # extra_trees, decision_tree and knn train only with --model (they never beat these).
 CANDIDATES = {
@@ -44,13 +44,14 @@ CANDIDATES = {
     "xgboost": {"model": "xgboost"},
     "mlp": {"model": "mlp"},
     "mlp_rating_one_hot": {"model": "mlp", "rating_one_hot": True},
+    "ensemble": {"model": "ensemble"},
 }
 
 
 def parse_jobs(argv: list[str] | None = None) -> dict:
     """Command line -> {job name: overrides of DEFAULT_PARAMS}."""
     parser = argparse.ArgumentParser(description="Train models, register the good ones, promote the best")
-    parser.add_argument("--all", action="store_true", help="the 8 standard candidates")
+    parser.add_argument("--all", action="store_true", help="the 9 standard candidates")
     parser.add_argument("--model", choices=MODELS, help="one model type")
     parser.add_argument("--name", help="label for the run (default: the model name)")
     parser.add_argument("--rating-one-hot", action="store_true", help="add one-hot columns for every 0-5 rating")

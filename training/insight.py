@@ -27,6 +27,9 @@ def run_params(params: dict) -> dict:
 
 def model_settings(bundle: dict) -> dict:
     """The fitted estimator's own settings (trees, depth, ...), prefixed `model.`; empty for the MLP."""
+    if "members" in bundle:  # ensemble: every member's settings, prefixed with its name
+        return {f"{name}.{k}": v for name, member in bundle["members"].items()
+                for k, v in (model_settings(member) or run_params(member["meta"]["params"])).items()}
     model = bundle["model"]
     if not hasattr(model, "get_params"):
         return {}

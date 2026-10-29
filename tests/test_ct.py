@@ -1,4 +1,4 @@
-"""Checks for step 8 (continuous training) on fake data: the 8 standard candidates train, save and predict
+"""Checks for step 8 (continuous training) on fake data: the 9 standard candidates train, save and predict
 like the API does, and the command line turns into the right training jobs."""
 
 from pathlib import Path
@@ -25,7 +25,7 @@ def data():
 
 
 def test_every_candidate_trains_and_loads_like_the_api_does(data, tmp_path):
-    assert len(CANDIDATES) == 8
+    assert len(CANDIDATES) == 9
     train, val = data
     on_demand = {m: {"model": m} for m in ("extra_trees", "decision_tree", "knn")}  # --model only
     for name, params in {**CANDIDATES, **on_demand}.items():

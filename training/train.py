@@ -18,6 +18,7 @@ produced the reported metrics.
 
 import argparse
 import sys
+import tempfile
 from pathlib import Path
 
 import joblib
@@ -64,6 +65,9 @@ SKLEARN_MODELS = {
         max_iter=1000, learning_rate=0.02, max_leaf_nodes=127, min_samples_leaf=20, l2_regularization=10.0,
         early_stopping=False, random_state=seed),
     "lightgbm": lambda seed: _lightgbm(seed),
+    # Tuned like gradient_boosting_tuned (30-setting search, 5-fold CV on train.csv only).
+    "lightgbm_tuned": lambda seed: _lightgbm(seed, n_estimators=600, learning_rate=0.02, num_leaves=63,
+                                             min_child_samples=20, subsample=1.0, colsample_bytree=1.0),
     "xgboost": lambda seed: _xgboost(seed),
     # On request only (--model), not CT candidates: none beats the candidates above (README, step 8).
     # extra_trees: 100 trees, leaf >= 10 keep the file at ~35 MB (200 trees, leaf 3: 160 MB for +0.002 ROC AUC)
@@ -79,16 +83,28 @@ SKLEARN_MODELS = {
 # training/__init__.py), so they train on one thread there. Linux (CI, GitHub CT) uses every core.
 _BOOST_JOBS = 1 if sys.platform == "darwin" else -1
 # Common library-default-style settings, fixed before training; no early stopping (that would tune on validation).
-def _lightgbm(seed: int):
+def _lightgbm(seed: int, **settings):
     from lightgbm import LGBMClassifier
-    return LGBMClassifier(n_estimators=500, learning_rate=0.05, num_leaves=31, subsample=0.8, subsample_freq=1,
-                          colsample_bytree=0.8, n_jobs=_BOOST_JOBS, random_state=seed, verbose=-1)
+    fixed = dict(n_estimators=500, learning_rate=0.05, num_leaves=31, subsample=0.8, subsample_freq=1,
+                 colsample_bytree=0.8)
+    return LGBMClassifier(**{**fixed, **settings}, n_jobs=_BOOST_JOBS, random_state=seed, verbose=-1)
 
 
 def _xgboost(seed: int):
     from xgboost import XGBClassifier
     return XGBClassifier(n_estimators=500, learning_rate=0.05, max_depth=6, subsample=0.8, colsample_bytree=0.8,
                          tree_method="hist", n_jobs=_BOOST_JOBS, random_state=seed)
+
+
+# "ensemble": the equal-weight average of three different kinds of model, each with its own input options.
+# Chosen by 5-fold CV on train.csv only (out-of-fold ROC AUC 0.99559 vs 0.99542 for the best single model);
+# mixing trees with the network helps, trees alone barely do. Settings: the tuned searches.
+ENSEMBLE_MEMBERS = {
+    "gradient_boosting_tuned": {"model": "gradient_boosting_tuned"},
+    "lightgbm_tuned": {"model": "lightgbm_tuned"},
+    "mlp_tuned": {"model": "mlp", "hidden": [128, 64], "epochs": 20, "lr": 5e-3, "dropout": 0.2,
+                  "weight_decay": 1e-2, "batch_size": 512, "rating_one_hot": True},
+}
 
 
 def to_matrix(df: pd.DataFrame, rating_one_hot: bool = False, drop_features=()) -> np.ndarray:
@@ -180,8 +196,10 @@ def run_training(train_df: pd.DataFrame, val_df: pd.DataFrame, params: dict | No
                  out_dir: Path = OUT_DIR) -> tuple[str, dict]:
     """Train on train_df, measure on val_df, save out_dir/model.pt (or model.joblib). Returns (path, metrics)."""
     p = {**DEFAULT_PARAMS, **(params or {})}
-    if p["model"] != "mlp" and p["model"] not in SKLEARN_MODELS:
-        raise ValueError(f"Unknown model {p['model']!r}; use 'mlp' or one of {sorted(SKLEARN_MODELS)}")
+    if p["model"] not in ("mlp", "ensemble") and p["model"] not in SKLEARN_MODELS:
+        raise ValueError(f"Unknown model {p['model']!r}; use 'mlp', 'ensemble' or one of {sorted(SKLEARN_MODELS)}")
+    if p["model"] == "ensemble":
+        return _train_ensemble(train_df, val_df, p, out_dir)
     torch.manual_seed(p["seed"])
     np.random.seed(p["seed"])
     device = pick_device()
@@ -248,6 +266,24 @@ def run_training(train_df: pd.DataFrame, val_df: pd.DataFrame, params: dict | No
     return str(path), metrics
 
 
+def _train_ensemble(train_df: pd.DataFrame, val_df: pd.DataFrame, p: dict, out_dir: Path) -> tuple[str, dict]:
+    """Train every ENSEMBLE_MEMBERS model (same seed), save them together in one model.joblib."""
+    members = {}
+    with tempfile.TemporaryDirectory() as tmp:  # only the combined file ends up in out_dir
+        for name, member in ENSEMBLE_MEMBERS.items():
+            print(f"ensemble member: {name}")
+            path, _ = run_training(train_df, val_df, {**member, "seed": p["seed"]}, Path(tmp) / name)
+            members[name] = load_bundle(path)
+    bundle = {"model": "ensemble", "members": members,
+              "meta": {"features": schema.FEATURES, "params": p, "n_train_rows": len(train_df),
+                       "n_val_rows": len(val_df)}}
+    bundle["meta"]["metrics"] = _metrics(val_df[schema.TARGET].to_numpy(dtype=int), predict_proba(bundle, val_df))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "model.joblib"
+    joblib.dump(bundle, path)  # the MLP member is pickled as a PyTorch module: the API has PyTorch anyway
+    return str(path), bundle["meta"]["metrics"]
+
+
 def model_file(folder) -> Path:
     """The model file inside a folder downloaded from MLflow: model.pt (MLP) or model.joblib (scikit-learn)."""
     for name in ("model.pt", "model.joblib"):
@@ -271,6 +307,8 @@ def load_bundle(path) -> dict:
 
 def predict_proba(bundle: dict, df: pd.DataFrame) -> np.ndarray:
     """P(satisfied) for passenger rows with the schema.FEATURES columns (extra columns are ignored)."""
+    if "members" in bundle:  # ensemble: the average of its members (each prepares the rows its own way)
+        return np.mean([predict_proba(m, df) for m in bundle["members"].values()], axis=0)
     meta = bundle["meta"]
     X = _standardize(to_matrix(df[meta["features"]], **_prep(meta.get("params", {}))),
                      np.array(meta["mean"], dtype=np.float32), np.array(meta["std"], dtype=np.float32))
