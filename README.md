@@ -232,7 +232,7 @@ The map of all the pieces is in [docs/architecture.md](docs/architecture.md). Th
 | Loop | Workflow | Runs on | When | What |
 |---|---|---|---|---|
 | **CI** | `ci.yml` → `test`, `image` | GitHub's servers | every push / pull request | pytest on **fake data** (incl. training all 8 model types), compose check, API image build |
-| **CT** | `ct.yml` → `train` | GitHub's servers | `make add-ct`, the *Run workflow* button, Mondays, new training code on `main` | download the dataset, train, register, promote the best: all in the **shared MLflow** |
+| **CT** | `ct.yml` → `train` | GitHub's servers | `make add-ct`, the *Run workflow* button, new training code on `main` | download the dataset, train, register, promote the best: all in the **shared MLflow** |
 | **CD** | `ci.yml` → `deploy` | a team PC (self-hosted runner), optional | push to `main`, after CI | push image to `ghcr.io/<repo>-api`, pull it on the PC, `docker compose up -d`, smoke test |
 
 Drift retraining (step 7, `python -m training.retrain`) stays a command you run where the stack is running,

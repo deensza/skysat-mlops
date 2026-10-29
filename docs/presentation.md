@@ -170,7 +170,7 @@ flowchart LR
 - **CD** (on `main`): the API image is pushed to GitHub's registry (ghcr.io). The deploy step (pull the image on
   a team PC, restart, smoke-test through Nginx) is written but **switched off**: it needs a self-hosted runner,
   and the last `main` run shows `deploy: skipped`
-- **CT** (on request + every Monday): trains the candidates on GitHub's machines → DagsHub; works with our PCs off
+- **CT** (on request + when training code lands on `main`): trains the candidates on GitHub's machines → DagsHub; works with our PCs off
 - Competition data never leaves our PCs: CI uses synthetic passengers, CT downloads the public original dataset
 
 > Notes: good place for a real story, slide 12.
@@ -186,7 +186,7 @@ Video: *(link)* · Script: [demo/video.md](../demo/video.md)
 ## 12. What went wrong, and what we learned
 
 - **A model in the registry must be loadable by production code.** A LightGBM model became the shared champion
-  while LightGBM was not yet in the main code; Monday's CT and new API copies could not load it. Fix: dependencies
+  while LightGBM was not yet in the main code; the next CT run and new API copies could not load it. Fix: dependencies
   pinned, the champion replaced by a model the code could load, and a rule: merge the code before a model can become
   the shared champion.
 - **Configuration decides where things go.** `make` reads `.env`, so a "local" run went to the shared MLflow.

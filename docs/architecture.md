@@ -136,7 +136,7 @@ flowchart LR
     end
     push(["push / pull request"]) --> test --> image
     image -- "main only" --> ghcr --> deploy
-    trig(["make add-ct / button /<br/>Mondays / new training code"]) --> ct --> mlflow
+    trig(["make add-ct / button /<br/>new training code"]) --> ct --> mlflow
 ```
 
 | Loop | Question it answers | File |
