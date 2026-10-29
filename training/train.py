@@ -274,7 +274,7 @@ def _train_ensemble(train_df: pd.DataFrame, val_df: pd.DataFrame, p: dict, out_d
             print(f"ensemble member: {name}")
             path, _ = run_training(train_df, val_df, {**member, "seed": p["seed"]}, Path(tmp) / name)
             members[name] = load_bundle(path)
-    bundle = {"model": "ensemble", "members": members,
+    bundle = {"model": "ensemble", "members": members, "average": "logit",  # logits: CV 0.99568 vs 0.99559
               "meta": {"features": schema.FEATURES, "params": p, "n_train_rows": len(train_df),
                        "n_val_rows": len(val_df)}}
     bundle["meta"]["metrics"] = _metrics(val_df[schema.TARGET].to_numpy(dtype=int), predict_proba(bundle, val_df))
@@ -308,7 +308,11 @@ def load_bundle(path) -> dict:
 def predict_proba(bundle: dict, df: pd.DataFrame) -> np.ndarray:
     """P(satisfied) for passenger rows with the schema.FEATURES columns (extra columns are ignored)."""
     if "members" in bundle:  # ensemble: the average of its members (each prepares the rows its own way)
-        return np.mean([predict_proba(m, df) for m in bundle["members"].values()], axis=0)
+        probs = np.array([predict_proba(m, df) for m in bundle["members"].values()])
+        if bundle.get("average") != "logit":  # ensembles saved before "average" existed: plain mean
+            return probs.mean(axis=0)
+        p = np.clip(probs, 1e-6, 1 - 1e-6)
+        return 1 / (1 + np.exp(-np.log(p / (1 - p)).mean(axis=0)))
     meta = bundle["meta"]
     X = _standardize(to_matrix(df[meta["features"]], **_prep(meta.get("params", {}))),
                      np.array(meta["mean"], dtype=np.float32), np.array(meta["std"], dtype=np.float32))

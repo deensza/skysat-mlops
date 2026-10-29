@@ -88,3 +88,14 @@ def test_input_options_change_the_columns_and_survive_save_and_load(data, tmp_pa
 def test_unknown_drop_feature_is_rejected(data):
     with pytest.raises(ValueError, match="unknown"):
         to_matrix(data[0], drop_features=["not_a_feature"])
+
+
+def test_ensemble_averages_logits_and_old_ensembles_keep_the_plain_mean(data, tmp_path):
+    members = {}
+    for name in ("logistic_regression", "random_forest"):
+        members[name] = load_bundle(run_training(data[0], data[1], {"model": name}, tmp_path / name)[0])
+    p = np.clip(np.array([predict_proba(m, data[1]) for m in members.values()]), 1e-6, 1 - 1e-6)
+
+    new = predict_proba({"members": members, "average": "logit"}, data[1])
+    assert new == pytest.approx(1 / (1 + np.sqrt((1 - p[0]) / p[0] * (1 - p[1]) / p[1])))  # geometric mean of odds
+    assert predict_proba({"members": members}, data[1]) == pytest.approx(p.mean(axis=0), abs=1e-6)

@@ -20,7 +20,7 @@ Open points (tick when done):
 - [ ] Upload slides (with the GitHub link) and code to Moodle
 - [ ] Decide on CD: switch on the deploy step (self-hosted runner on one PC) or present it as "built, off" (slide 10)
 - [ ] At the end: merge `osm` into `main` → CT on GitHub trains the 9 candidates (incl. `ensemble`, local
-      validation ROC AUC 0.99598) on DagsHub → both rebuild the API image (`make d-build`) → update slide 6
+      validation ROC AUC 0.99605, logit-averaged) on DagsHub → both rebuild the API image (`make d-build`) → update slide 6
       with the new champion. Not before: `main`'s code cannot load an ensemble (same failure as the LightGBM
       champion, slide 12)
 - [ ] Rehearse once with a timer (target: ~10 min slides + 3 min video + questions)
