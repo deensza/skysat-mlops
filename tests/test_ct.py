@@ -64,7 +64,7 @@ def test_runs_log_the_real_settings_the_training_curve_and_plots(data, local_mlf
         train_and_register(client, train, val, name, params, champion_auc=None)
     runs = {r.info.run_name: r for r in client.search_runs([experiment])}
 
-    lgbm = runs["ct-lgbm"].data.params
+    lgbm, lgbm_metrics = runs["ct-lgbm"].data.params, runs["ct-lgbm"].data.metrics
     assert lgbm["model.n_estimators"] == "500" and "epochs" not in lgbm  # its own settings, not the MLP's
     net = runs["ct-net"]
     assert "epochs" in net.data.params and not any(k.startswith("model.") for k in net.data.params)
@@ -72,7 +72,9 @@ def test_runs_log_the_real_settings_the_training_curve_and_plots(data, local_mlf
     ens = runs["ct-ens"]
     assert "lightgbm_tuned.model.num_leaves" in ens.data.params and ens.data.params["mlp_tuned.epochs"] == "20"
     assert len(client.get_metric_history(ens.info.run_id, "mlp_tuned.train_loss")) == 20  # the member's curve
-    common = {"roc_curve", "precision_recall", "calibration", "confusion_matrix", "feature_importance"}
+    common = {"overview", "roc_curve", "precision_recall", "threshold", "calibration", "confusion_matrix",
+              "feature_importance", "groups"}
+    assert any(k.startswith("group.travel_class.Eco.") for k in lgbm_metrics)  # per-group scores, comparable
     for name, run in runs.items():
         artifacts = {a.path for a in client.list_artifacts(run.info.run_id)}
         assert {"report.md", "plots", "tables", "model"} <= artifacts, name
