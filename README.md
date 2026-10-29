@@ -276,8 +276,9 @@ original dataset (83,123 train / 20,781 validation rows):
   3 seeds each: lightgbm 0.9957, xgboost 0.9955 (mean; seed-to-seed spread ≤ 0.0001). The 5 above reproduce
   exactly. Random searches scored by 5-fold CV on train.csv only (validation used once, for the winner):
   gradient boosting 0.9951 → **0.9958** (`gradient_boosting_tuned`, 72 settings); LightGBM 0.9956, XGBoost 0.9957
-  and MLP 0.9956 did not beat their fixed settings by more than noise. An equal-weight average of the four best
-  scored 0.9960, but the API serves one model, so it is not a CT candidate.
+  and MLP 0.9956 did not beat their fixed settings by more than noise. `ensemble` (CT candidate, one file): tuned
+  gradient boosting + tuned LightGBM + tuned MLP, their logits averaged; members and averaging chosen by 5-fold CV
+  (0.99568, best of all 15 member sets × 2 averaging methods); validation 0.99605, seed-to-seed spread 0.00003.
 - On request only (`--model`), same split: extra_trees 0.9912 (100 trees, leaf ≥ 10: 35 MB instead of 160 MB),
   decision_tree 0.9883, knn 0.9803 (25 neighbours). Naive Bayes was tried and left out: 0.9227 fails the 0.95 gate.
 - macOS only: PyTorch and LightGBM/XGBoost bring different OpenMP runtimes and crash together when both run
