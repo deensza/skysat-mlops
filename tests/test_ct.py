@@ -12,6 +12,7 @@ from skysat import schema
 from skysat.data import clean
 from tests.test_data_and_drift import make_raw
 from tests.test_track import local_mlflow  # noqa: F401 (fixture)
+from training import track
 from training.ct import CANDIDATES, parse_jobs, train_and_register
 from training.train import load_bundle, model_file, predict_proba, run_training
 
@@ -69,3 +70,12 @@ def test_runs_log_the_real_settings_the_training_curve_and_plots(data, local_mlf
     for run in runs.values():
         plots = {a.path for a in client.list_artifacts(run.info.run_id, "plots")}
         assert plots == {"plots/roc_curve.png", "plots/confusion_matrix.png"}
+
+    # every run is also an MLflow 3 logged model (the experiment's Models tab), and the registry version points to
+    # it: the champion downloads through that source exactly as the API does
+    logged = client.search_logged_models(experiment_ids=[experiment])
+    assert sorted(m.name for m in logged) == ["ct-lgbm", "ct-net"]
+    assert all(m.metrics and m.params.get("model") for m in logged)
+    champion = client.get_model_version_by_alias("skysat-satisfaction", "champion")
+    assert champion.source.startswith("models:/m-")
+    assert track.champion_auc_on(client, val) == pytest.approx(max(r.data.metrics["roc_auc"] for r in runs.values()))

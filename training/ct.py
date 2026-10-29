@@ -87,7 +87,15 @@ def train_and_register(client: MlflowClient, train_df, val_df, name: str, overri
         bundle = load_bundle(path)
         mlflow.log_params(model_settings(bundle))  # the fitted model's own settings (trees, depth, ...)
         log_insights(bundle, val_df)  # training curve (MLP), ROC curve, confusion matrix
-        version = register(client, run, metrics["roc_auc"], champion_auc=champion_auc)
+        # MLflow 3 "logged model": the experiment's Models tab lists it with its settings and scores, linked to the
+        # run and to the registry version. Same model file, so the API loads it as before.
+        settings = {k: str(v) for k, v in {**run_params(params), **model_settings(bundle)}.items()}
+        logged = mlflow.initialize_logged_model(name=f"ct-{name}", source_run_id=run.info.run_id,
+                                                model_type=params["model"], params=settings)
+        client.log_model_artifacts(logged.model_id, str(Path(path).parent))
+        mlflow.log_metrics(metrics, model_id=logged.model_id)
+        mlflow.finalize_logged_model(logged.model_id, "READY")
+        version = register(client, run, metrics["roc_auc"], champion_auc=champion_auc, model_id=logged.model_id)
     return metrics["roc_auc"], version
 
 

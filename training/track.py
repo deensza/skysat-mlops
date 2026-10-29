@@ -88,8 +88,9 @@ def current_champion_auc(client: MlflowClient) -> float | None:
     return client.get_run(champion.run_id).data.metrics.get("roc_auc")
 
 
-def register(client: MlflowClient, run, roc_auc: float, champion_auc: float | None = None) -> str | None:
-    """Quality gate. champion_auc: the champion's score on the same rows as roc_auc (champion_auc_on);
+def register(client: MlflowClient, run, roc_auc: float, champion_auc: float | None = None,
+             model_id: str | None = None) -> str | None:
+    """Quality gate. model_id: an MLflow 3 logged model to register (else the run's `model` folder). champion_auc: the champion's score on the same rows as roc_auc (champion_auc_on);
     if not given (only `--stub`, which has no real rows), the roc_auc stored with the champion's run is used.
     Returns the new version number, or None if the gate rejected the model."""
     if roc_auc < ROC_AUC_THRESHOLD:
@@ -100,9 +101,8 @@ def register(client: MlflowClient, run, roc_auc: float, champion_auc: float | No
         client.create_registered_model(MODEL_NAME)
     except MlflowException:
         pass  # already exists
-    version = client.create_model_version(
-        MODEL_NAME, source=f"{run.info.artifact_uri}/model", run_id=run.info.run_id
-    )
+    source = f"models:/{model_id}" if model_id else f"{run.info.artifact_uri}/model"
+    version = client.create_model_version(MODEL_NAME, source=source, run_id=run.info.run_id, model_id=model_id)
     print(f"Registered {MODEL_NAME} version {version.version}")
 
     if champion_auc is None:
