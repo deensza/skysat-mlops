@@ -6,6 +6,13 @@ import pytest
 from tests.test_data_and_drift import make_raw
 from training import competition
 
+# pytabkit (RealMLP) is in requirements-train.txt only, so CI runs the tree models alone
+try:
+    import pytabkit  # noqa: F401
+    AVAILABLE = competition.MODELS
+except ImportError:
+    AVAILABLE = [m for m in competition.MODELS if m != "realmlp"]
+
 
 def competition_like(n: int, seed: int) -> pd.DataFrame:
     """Fake rows in the competition's format: no "Inflight service", a True/False target."""
@@ -14,7 +21,7 @@ def competition_like(n: int, seed: int) -> pd.DataFrame:
     return df
 
 
-@pytest.mark.parametrize("models", [["hgb"], ["lightgbm"], ["xgboost"], competition.DEFAULT_MODELS])
+@pytest.mark.parametrize("models", [["hgb"], ["lightgbm"], ["xgboost"], [m for m in competition.DEFAULT_MODELS if m in AVAILABLE]])
 def test_cross_validation_scores_every_fold_and_predicts_the_test_set(models):
     train = competition_like(600, seed=1)
     train[competition.TARGET] = train[competition.TARGET].astype(int)
@@ -97,8 +104,8 @@ def test_a_logged_run_has_scores_per_model_plots_tables_and_a_report(tmp_path, m
     train[competition.TARGET] = train[competition.TARGET].astype(int)
     test = competition_like(200, seed=2).drop(columns=[competition.TARGET])
     scores, _, details = competition.cross_validate(train, test, None, {"max_iter": 30}, folds=3,
-                                                    models=competition.MODELS, rates_from=train)
-    competition.log_run({"model": "+".join(competition.MODELS)}, scores, details, train[competition.TARGET].to_numpy(), "abc")
+                                                    models=AVAILABLE, rates_from=train)
+    competition.log_run({"model": "+".join(AVAILABLE)}, scores, details, train[competition.TARGET].to_numpy(), "abc")
 
     run = mlflow.search_runs(experiment_names=["skysat-kaggle"], output_format="list")[0]
     assert {"cv_roc_auc_mean", "oof_roc_auc", "hgb.cv_roc_auc_mean", "lightgbm.cv_roc_auc_mean",
