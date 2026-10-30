@@ -33,8 +33,12 @@ with the same value there, overall and within the same type of travel and class 
     hgb 0.95966 | lightgbm 0.96012 | average of logits 0.96013 ± 0.00053  (better in all 5 folds; public LB 0.95982)
 Then exact-combination lookups in the original data (original_lookups: e.g. flight distance + age, the 5 digital
 ratings) and target encoding of combinations with the competition labels, fitted inside every fold (TE_COMBOS):
-    average of logits 0.96045 ± 0.00059  <- default; better in all 5 folds (fold 1 alone: lookups +0.00011,
-    target encoding +0.00045, both +0.00055; 9 more, larger combinations: worse)
+    hgb + lightgbm 0.96045 ± 0.00059, better in all 5 folds (fold 1 alone: lookups +0.00011, target encoding
+    +0.00045, both +0.00055; 9 more, larger combinations: worse)
+XGBoost (XGB_PARAMS, depth 10) instead of HGB, the weakest of the three on fold 1 (hgb 0.96013, lightgbm 0.96068,
+xgboost 0.96074; all three averaged 0.96076, lightgbm + xgboost 0.96080):
+    lightgbm + xgboost 0.96056 ± 0.00056  <- default; better in folds 1-4, fold 5 equal. The tree models' logits
+    correlate 0.997-0.999, so more of them add little: the next gain needs a different kind of model.
 Screened on fold 1 and not kept: every column as a category 0.95957, value counts 0.95971, rates + categories
 0.95974 (vs. rates alone 0.96021). With the rates, averaging adds almost nothing over LightGBM alone.
 
@@ -68,7 +72,10 @@ SEED = 42
 DEFAULT_PARAMS = {"learning_rate": 0.05, "max_iter": 1000, "max_leaf_nodes": 127}
 LGB_PARAMS = {"n_estimators": 3000, "learning_rate": 0.02, "num_leaves": 63, "min_child_samples": 40, "subsample": 0.8,
               "subsample_freq": 1, "colsample_bytree": 0.7, "reg_lambda": 5.0}
-MODELS = ["hgb", "lightgbm"]
+XGB_PARAMS = {"n_estimators": 5000, "learning_rate": 0.02, "max_depth": 10, "min_child_weight": 20, "subsample": 0.8,
+              "colsample_bytree": 0.5, "reg_lambda": 10.0}
+MODELS = ["hgb", "lightgbm", "xgboost"]
+DEFAULT_MODELS = ["lightgbm", "xgboost"]
 
 
 def load_competition() -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -170,8 +177,14 @@ def fit_predict(kind: str, params: dict, X_fit, y_fit, frames: list) -> tuple[li
     if kind == "hgb":
         fitted = model(params).fit(X_fit, y_fit)
         return [fitted.predict_proba(f)[:, 1] for f in frames], fitted.n_iter_, None
-    import lightgbm as lgb
     cut = int(len(X_fit) * 0.9)  # early stopping on the last 10% of the training fold, like HGB's
+    if kind == "xgboost":
+        import xgboost as xgb
+        fitted = xgb.XGBClassifier(**XGB_PARAMS, tree_method="hist", enable_categorical=True, max_cat_to_onehot=4,
+                                   eval_metric="auc", early_stopping_rounds=200, random_state=SEED, n_jobs=-1)
+        fitted.fit(X_fit.iloc[:cut], y_fit.iloc[:cut], eval_set=[(X_fit.iloc[cut:], y_fit.iloc[cut:])], verbose=False)
+        return [fitted.predict_proba(f)[:, 1] for f in frames], fitted.best_iteration, None
+    import lightgbm as lgb
     fitted = lgb.LGBMClassifier(**LGB_PARAMS, random_state=SEED, verbose=-1).fit(
         X_fit.iloc[:cut], y_fit.iloc[:cut], eval_X=X_fit.iloc[cut:], eval_y=y_fit.iloc[cut:], eval_metric="auc",
         callbacks=[lgb.early_stopping(200, verbose=False)])
@@ -248,7 +261,7 @@ def main():
                     help="leave out the original dataset's satisfied share per value (CV 0.95905 instead of 0.96013)")
     ap.add_argument("--no-target-encoding", dest="target_encode", action="store_false",
                     help="leave out the in-fold target encoding of TE_COMBOS (CV 0.96045 with it)")
-    ap.add_argument("--models", nargs="+", choices=MODELS, default=MODELS, help="several = average of their logits")
+    ap.add_argument("--models", nargs="+", choices=MODELS, default=DEFAULT_MODELS, help="several = average of their logits")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--no-mlflow", action="store_true", help="do not log the run (quick experiments)")
     args = ap.parse_args()
@@ -271,7 +284,8 @@ def main():
         settings = {**params, "model": "+".join(args.models), "folds": args.folds, "train_rows": len(train),
                     "original_rows": 0 if extra is None else len(extra), "original_rates": args.original_rates,
                     "target_encoding": args.target_encode,
-                    **({f"lgb_{k}": v for k, v in LGB_PARAMS.items()} if "lightgbm" in args.models else {})}
+                    **({f"lgb_{k}": v for k, v in LGB_PARAMS.items()} if "lightgbm" in args.models else {}),
+                    **({f"xgb_{k}": v for k, v in XGB_PARAMS.items()} if "xgboost" in args.models else {})}
         log_run(settings, scores, details, train[TARGET].to_numpy(), digest)
 
 
@@ -307,7 +321,7 @@ def log_run(settings: dict, scores: list[float], details: dict, y: np.ndarray, d
                    "oof_roc_auc": roc_auc_score(y, oof), "oof_accuracy": float(((oof >= 0.5) == y).mean()),
                    **{f"cv_roc_auc_fold{k + 1}": s for k, s in enumerate(scores)}}
         for m, g in folds.groupby("model"):
-            if m != settings["model"]:
+            if "+" not in m:  # the combined row is the run's own cv_roc_auc_mean
                 metrics[f"{m}.cv_roc_auc_mean"] = float(g["roc_auc"].mean())
         mlflow.log_metrics(metrics)
         mlflow.log_text(folds.round(5).to_csv(index=False), "tables/folds.csv")

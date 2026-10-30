@@ -14,7 +14,7 @@ def competition_like(n: int, seed: int) -> pd.DataFrame:
     return df
 
 
-@pytest.mark.parametrize("models", [["hgb"], ["lightgbm"], competition.MODELS])
+@pytest.mark.parametrize("models", [["hgb"], ["lightgbm"], ["xgboost"], competition.DEFAULT_MODELS])
 def test_cross_validation_scores_every_fold_and_predicts_the_test_set(models):
     train = competition_like(600, seed=1)
     train[competition.TARGET] = train[competition.TARGET].astype(int)
@@ -83,10 +83,11 @@ def test_a_logged_run_has_scores_per_model_plots_tables_and_a_report(tmp_path, m
     test = competition_like(200, seed=2).drop(columns=[competition.TARGET])
     scores, _, details = competition.cross_validate(train, test, None, {"max_iter": 30}, folds=3,
                                                     models=competition.MODELS, rates_from=train)
-    competition.log_run({"model": "hgb+lightgbm"}, scores, details, train[competition.TARGET].to_numpy(), "abc")
+    competition.log_run({"model": "+".join(competition.MODELS)}, scores, details, train[competition.TARGET].to_numpy(), "abc")
 
     run = mlflow.search_runs(experiment_names=["skysat-kaggle"], output_format="list")[0]
-    assert {"cv_roc_auc_mean", "oof_roc_auc", "hgb.cv_roc_auc_mean", "lightgbm.cv_roc_auc_mean"} <= set(run.data.metrics)
+    assert {"cv_roc_auc_mean", "oof_roc_auc", "hgb.cv_roc_auc_mean", "lightgbm.cv_roc_auc_mean",
+            "xgboost.cv_roc_auc_mean"} <= set(run.data.metrics)
     files = {f.path for d in ("", "plots", "tables") for f in mlflow.MlflowClient().list_artifacts(run.info.run_id, d)}
     assert {"report.md", "plots/overview.png", "plots/folds.png", "plots/feature_importance.png",
             "tables/folds.csv", "tables/feature_importance.csv"} <= files
