@@ -8,7 +8,7 @@ Open points (tick when done):
 
 - [ ] Final submission made (`make submit`) and its public score known
 - [ ] Rehearsal: run every scene once, fill in "Rehearsal log"
-- [ ] Record, cut, upload; put the link on slide 13 of [docs/presentation.md](../docs/presentation.md)
+- [x] Record, cut, upload: [Google Drive](https://drive.google.com/drive/folders/1WBdX3AQdVqQV6cO-wTW8shrivhatKatB). Link on slide 13 of [docs/presentation.md](../docs/presentation.md)
 
 ## Rules for what may be on screen (competition rules)
 

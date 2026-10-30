@@ -207,6 +207,8 @@ Video: *(link)* · Script: [demo/video.md](../demo/video.md)
   traceable by its sha256
 - CV ROC AUC 0.95905 ± 0.00056 (gradient boosting + LightGBM, logits averaged; was 0.95853) *(add the public score)*
 
+Video: [Google Drive](https://drive.google.com/drive/folders/1WBdX3AQdVqQV6cO-wTW8shrivhatKatB) · Script: [demo/kaggle-video.md](../demo/kaggle-video.md)
+
 ## 14. Summary and questions
 
 - Built: a simple model with the **full lifecycle**: tracked, registered, packaged, served, scaled, monitored,
