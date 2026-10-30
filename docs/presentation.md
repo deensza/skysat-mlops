@@ -205,7 +205,7 @@ Video: *(link)* · Script: [demo/video.md](../demo/video.md)
 - Same dataset family: Kaggle Playground S6E10 *Predicting Airline Satisfaction* (metric ROC AUC)
 - Separate pipeline (other columns; data must stay on our PCs): 5-fold CV, logged to MLflow, every submission
   traceable by its sha256
-- CV ROC AUC 0.95905 ± 0.00056 (gradient boosting + LightGBM, logits averaged; was 0.95853) *(add the public score)*
+- CV ROC AUC 0.96013 ± 0.00053 (gradient boosting + LightGBM + satisfied-share inputs from the original dataset; was 0.95853) *(add the public score)*
 
 Video: [Google Drive](https://drive.google.com/drive/folders/1WBdX3AQdVqQV6cO-wTW8shrivhatKatB) · Script: [demo/kaggle-video.md](../demo/kaggle-video.md)
 
