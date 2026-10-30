@@ -45,6 +45,33 @@ def test_original_rates_come_from_the_original_labels_only():
     assert "Age rate by travel and class" in rates and "Class rate by travel and class" not in rates
 
 
+
+def test_original_lookups_count_exact_matches_in_the_original():
+    original = competition_like(300, seed=4)
+    original[competition.TARGET] = original[competition.TARGET].astype(int)
+    df = pd.concat([original.head(3), competition_like(2, seed=9).assign(**{"Flight Distance": -1})], ignore_index=True)
+    lookups = competition.original_lookups(df, original)
+    counts = original["Flight Distance"].value_counts()
+    assert lookups["original distance count"].tolist()[:3] == df["Flight Distance"].head(3).map(counts).tolist()
+    assert lookups["original distance count"].tolist()[3:] == [0, 0]  # unseen distance: no match, rate missing
+    assert lookups["original distance rate"].iloc[3:].isna().all()
+
+
+def test_target_encoding_never_sees_the_labels_it_is_scored_on():
+    train = competition_like(400, seed=1)
+    train[competition.TARGET] = train[competition.TARGET].astype(int)
+    keys = competition.combo_keys(train)
+    fit, held_out = keys.iloc[:300], keys.iloc[300:]
+    y = train[competition.TARGET].iloc[:300]
+    _, enc_held = competition.encode_combos(fit, y, [held_out])
+    flipped = train[competition.TARGET].copy()
+    flipped.iloc[300:] = 1 - flipped.iloc[300:]  # changing held-out labels must not change their encoding
+    _, enc_again = competition.encode_combos(fit, flipped.iloc[:300], [held_out])
+    pd.testing.assert_frame_equal(enc_held, enc_again)
+    scores, _, _ = competition.cross_validate(train, competition_like(100, seed=2).drop(columns=[competition.TARGET]),
+                                              None, {"max_iter": 30}, folds=3, target_encode=True)
+    assert len(scores) == 3
+
 def test_a_logged_run_has_scores_per_model_plots_tables_and_a_report(tmp_path, monkeypatch):
     import mlflow
     uri = f"sqlite:///{tmp_path}/mlflow.db"

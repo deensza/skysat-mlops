@@ -30,7 +30,11 @@ above in all 5 folds, and the average of both models' logits beat both:
     hgb 0.95852 | lightgbm 0.95899 | average of logits 0.95904
 Then inputs from the original dataset (external, rule 6.a): for every column, the share of satisfied passengers
 with the same value there, overall and within the same type of travel and class (original_rates):
-    hgb 0.95966 | lightgbm 0.96012 | average of logits 0.96013 ± 0.00053  <- default; better in all 5 folds
+    hgb 0.95966 | lightgbm 0.96012 | average of logits 0.96013 ± 0.00053  (better in all 5 folds; public LB 0.95982)
+Then exact-combination lookups in the original data (original_lookups: e.g. flight distance + age, the 5 digital
+ratings) and target encoding of combinations with the competition labels, fitted inside every fold (TE_COMBOS):
+    average of logits 0.96045 ± 0.00059  <- default; better in all 5 folds (fold 1 alone: lookups +0.00011,
+    target encoding +0.00045, both +0.00055; 9 more, larger combinations: worse)
 Screened on fold 1 and not kept: every column as a category 0.95957, value counts 0.95971, rates + categories
 0.95974 (vs. rates alone 0.96021). With the rates, averaging adds almost nothing over LightGBM alone.
 
@@ -50,6 +54,7 @@ from pandas.api.types import CategoricalDtype
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedKFold
+from sklearn.preprocessing import TargetEncoder
 
 from skysat.data import DATA_DIR, PROJECT_ROOT
 
@@ -99,10 +104,57 @@ def original_rates(df: pd.DataFrame, original: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out, index=df.index)
 
 
+DIGITAL = ["Inflight wifi service", "Ease of Online booking", "Online boarding", "Departure/Arrival time convenient",
+           "Gate location"]
+COMFORT = ["Seat comfort", "Inflight entertainment", "Food and drink", "Cleanliness"]
+SERVICE = ["On-board service", "Leg room service", "Baggage handling", "Checkin service"]
+# Exact combinations looked up in the original data (rate and count). The synthetic rows seem to keep a source
+# passenger's flight distance, so distance + age etc. nearly identify them; the rating groups are passenger profiles.
+LOOKUP_KEYS = {"distance": ["Flight Distance"], "distance and class": ["Flight Distance", "Class"],
+               "distance and travel": ["Flight Distance", "Type of Travel"],
+               "distance and customer": ["Flight Distance", "Customer Type"], "distance and age": ["Flight Distance", "Age"],
+               "digital ratings": DIGITAL, "comfort ratings": COMFORT, "service ratings": SERVICE,
+               "age and travel": ["Age", "Type of Travel"], "segment": ["Type of Travel", "Class", "Customer Type"]}
+# Combinations target-encoded with the competition labels, inside each fold (encode_combos)
+TE_COMBOS = {"distance": ["Flight Distance"], "distance and age": ["Flight Distance", "Age"],
+             "distance and class": ["Flight Distance", "Class"], "distance and travel": ["Flight Distance", "Type of Travel"],
+             "age and class": ["Age", "Class"], "age and travel": ["Age", "Type of Travel"],
+             "wifi boarding travel": ["Inflight wifi service", "Online boarding", "Type of Travel"],
+             "digital ratings": DIGITAL, "comfort ratings": COMFORT, "service ratings": SERVICE}
+
+
+def original_lookups(df: pd.DataFrame, original: pd.DataFrame, smooth: float = 2.0) -> pd.DataFrame:
+    """For each combination in LOOKUP_KEYS: how many original passengers have exactly these values, and their
+    satisfied share (pulled towards the overall share by `smooth` passengers). Original labels only."""
+    prior, out = original[TARGET].mean(), {}
+    for name, cols in LOOKUP_KEYS.items():
+        s = original.groupby(cols)[TARGET].agg(["sum", "count"]).reset_index()
+        s["rate"] = (s["sum"] + smooth * prior) / (s["count"] + smooth)
+        m = df[cols].merge(s, how="left")
+        out[f"original {name} rate"] = m["rate"].to_numpy()
+        out[f"original {name} count"] = m["count"].fillna(0).to_numpy()
+    return pd.DataFrame(out, index=df.index)
+
+
+def combo_keys(df: pd.DataFrame) -> pd.DataFrame:
+    """One text key per TE_COMBOS combination, e.g. "1234_45" for distance and age."""
+    return pd.DataFrame({name: df[cols].astype(str).agg("_".join, axis=1) for name, cols in TE_COMBOS.items()},
+                        index=df.index)
+
+
+def encode_combos(keys_fit: pd.DataFrame, y_fit: pd.Series, keys_other: list[pd.DataFrame]) -> list[pd.DataFrame]:
+    """Target encoding fitted on the fold's training rows only: those get out-of-fold values (sklearn cross-fits
+    inside them), the other frames (held-out rows, test) get the encoding of all training rows."""
+    enc = TargetEncoder(target_type="binary", cv=5, shuffle=True, random_state=SEED)
+    cols = [f"encoded {name}" for name in keys_fit.columns]
+    fitted = [enc.fit_transform(keys_fit, y_fit)] + [enc.transform(k) for k in keys_other]
+    return [pd.DataFrame(v, index=k.index, columns=cols) for v, k in zip(fitted, [keys_fit, *keys_other])]
+
+
 def features(df: pd.DataFrame, categories: dict, original: pd.DataFrame | None = None) -> pd.DataFrame:
     X = df.drop(columns=["id", TARGET], errors="ignore")
     if original is not None:
-        X = pd.concat([X, original_rates(df, original)], axis=1)
+        X = pd.concat([X, original_rates(df, original), original_lookups(df, original)], axis=1)
     for col in CATEGORICAL:
         X[col] = X[col].astype(categories[col])  # same category codes in every frame
     return X
@@ -134,23 +186,30 @@ def logit(p: np.ndarray) -> np.ndarray:
 
 def cross_validate(train: pd.DataFrame, test: pd.DataFrame, extra: pd.DataFrame | None, params: dict,
                    folds: int = 5, models: list[str] = ("hgb",),
-                   rates_from: pd.DataFrame | None = None) -> tuple[list[float], np.ndarray, dict]:
+                   rates_from: pd.DataFrame | None = None,
+                   target_encode: bool = False) -> tuple[list[float], np.ndarray, dict]:
     """Per-fold ROC AUC on held-out competition rows, the test predictions averaged over the folds, and details for
     MLflow: out-of-fold predictions, every model's score per fold, LightGBM's input importance.
-    With several models, each fold's prediction is the average of the models' logits."""
+    With several models, each fold's prediction is the average of the models' logits. target_encode: add
+    encode_combos's columns, fitted inside every fold."""
     frames = [train, test] + ([extra] if extra is not None else [])
     categories = {c: CategoricalDtype(sorted(pd.concat([f[c] for f in frames]).dropna().unique())) for c in CATEGORICAL}
     X, y, X_test = features(train, categories, rates_from), train[TARGET], features(test, categories, rates_from)
     X_extra = features(extra, categories, rates_from) if extra is not None else None
+    if target_encode:
+        keys, keys_test = combo_keys(train), combo_keys(test)
 
     scores, test_pred, oof, rows, gains = [], np.zeros(len(test)), np.zeros(len(train)), [], []
     for k, (fit_idx, val_idx) in enumerate(StratifiedKFold(folds, shuffle=True, random_state=SEED).split(X, y)):
-        X_fit, y_fit = X.iloc[fit_idx], y.iloc[fit_idx]
+        X_fit, y_fit, X_val, X_te = X.iloc[fit_idx], y.iloc[fit_idx], X.iloc[val_idx], X_test
+        if target_encode:
+            enc_fit, enc_val, enc_te = encode_combos(keys.iloc[fit_idx], y_fit, [keys.iloc[val_idx], keys_test])
+            X_fit, X_val, X_te = (pd.concat([a, b], axis=1) for a, b in ((X_fit, enc_fit), (X_val, enc_val), (X_te, enc_te)))
         if X_extra is not None:  # external rows only ever train; they are never scored
             X_fit, y_fit = pd.concat([X_fit, X_extra]), pd.concat([y_fit, extra[TARGET]])
         val_logits, test_logits, parts = [], [], []
         for kind in models:
-            (p_val, p_test), rounds, gain = fit_predict(kind, params, X_fit, y_fit, [X.iloc[val_idx], X_test])
+            (p_val, p_test), rounds, gain = fit_predict(kind, params, X_fit, y_fit, [X_val, X_te])
             val_logits.append(logit(p_val))
             test_logits.append(logit(p_test))
             rows.append({"fold": k + 1, "model": kind, "roc_auc": roc_auc_score(y.iloc[val_idx], p_val), "rounds": rounds})
@@ -187,6 +246,8 @@ def main():
     ap.add_argument("--max-leaf-nodes", type=int, default=DEFAULT_PARAMS["max_leaf_nodes"])
     ap.add_argument("--no-original-rates", dest="original_rates", action="store_false",
                     help="leave out the original dataset's satisfied share per value (CV 0.95905 instead of 0.96013)")
+    ap.add_argument("--no-target-encoding", dest="target_encode", action="store_false",
+                    help="leave out the in-fold target encoding of TE_COMBOS (CV 0.96045 with it)")
     ap.add_argument("--models", nargs="+", choices=MODELS, default=MODELS, help="several = average of their logits")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--no-mlflow", action="store_true", help="do not log the run (quick experiments)")
@@ -199,7 +260,8 @@ def main():
     print(f"competition train {len(train):,} rows ({train[TARGET].mean():.1%} satisfied), test {len(test):,} rows, "
           f"original added: {0 if extra is None else len(extra):,} rows | {args.models} | hgb {params}")
 
-    scores, pred, details = cross_validate(train, test, extra, params, args.folds, args.models, rates_from)
+    scores, pred, details = cross_validate(train, test, extra, params, args.folds, args.models, rates_from,
+                                           args.target_encode)
     path = write_submission(test, pred)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
     print(f"CV roc_auc {np.mean(scores):.5f} ± {np.std(scores):.5f} | wrote {path.relative_to(PROJECT_ROOT)} "
@@ -208,6 +270,7 @@ def main():
     if not args.no_mlflow:
         settings = {**params, "model": "+".join(args.models), "folds": args.folds, "train_rows": len(train),
                     "original_rows": 0 if extra is None else len(extra), "original_rates": args.original_rates,
+                    "target_encoding": args.target_encode,
                     **({f"lgb_{k}": v for k, v in LGB_PARAMS.items()} if "lightgbm" in args.models else {})}
         log_run(settings, scores, details, train[TARGET].to_numpy(), digest)
 
