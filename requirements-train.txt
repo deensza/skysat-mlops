@@ -5,4 +5,5 @@
 -r requirements.txt
 torch==2.14.1
 kaggle==2.2.4
+pytabkit==1.7.3  # RealMLP for the competition track (Apache-2.0)
 psycopg[binary]==3.3.6

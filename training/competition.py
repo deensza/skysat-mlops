@@ -37,8 +37,12 @@ ratings) and target encoding of combinations with the competition labels, fitted
     +0.00045, both +0.00055; 9 more, larger combinations: worse)
 XGBoost (XGB_PARAMS, depth 10) instead of HGB, the weakest of the three on fold 1 (hgb 0.96013, lightgbm 0.96068,
 xgboost 0.96074; all three averaged 0.96076, lightgbm + xgboost 0.96080):
-    lightgbm + xgboost 0.96056 ± 0.00056  <- default; better in folds 1-4, fold 5 equal. The tree models' logits
-    correlate 0.997-0.999, so more of them add little: the next gain needs a different kind of model.
+    lightgbm + xgboost 0.96056 ± 0.00056, better in folds 1-4, fold 5 equal. The tree models' logits correlate
+    0.997-0.999, so more of them add little: the next gain needs a different kind of model.
+RealMLP, a neural network, on its own inputs (realmlp_inputs: raw columns, numbers also as categories and counts).
+Fold 1: on the trees' inputs 0.96023 (correlation with the trees 0.995), on its own inputs 0.96096 (0.993, better
+than either tree); weight against the trees' average 0.5: 0.96135, 0.6: 0.96137, 0.7: 0.96134 -> WEIGHTS (0.5):
+    lightgbm + xgboost + realmlp 0.96113 ± 0.00054  <- default; better in all 5 folds (+0.0005 to +0.0008)
 Screened on fold 1 and not kept: every column as a category 0.95957, value counts 0.95971, rates + categories
 0.95974 (vs. rates alone 0.96021). With the rates, averaging adds almost nothing over LightGBM alone.
 
@@ -67,6 +71,11 @@ ZIP = DATA_DIR / f"{COMPETITION}.zip"
 OUT_DIR = PROJECT_ROOT / "artifacts" / "kaggle"
 TARGET = "satisfaction"
 CATEGORICAL = ["Gender", "Customer Type", "Type of Travel", "Class"]
+RAW_COLUMNS = CATEGORICAL + ["Age", "Flight Distance", "Inflight wifi service", "Departure/Arrival time convenient",
+                             "Ease of Online booking", "Gate location", "Food and drink", "Online boarding",
+                             "Seat comfort", "Inflight entertainment", "On-board service", "Leg room service",
+                             "Baggage handling", "Checkin service", "Cleanliness", "Departure Delay in Minutes",
+                             "Arrival Delay in Minutes"]
 SEED = 42
 
 DEFAULT_PARAMS = {"learning_rate": 0.05, "max_iter": 1000, "max_leaf_nodes": 127}
@@ -74,8 +83,18 @@ LGB_PARAMS = {"n_estimators": 3000, "learning_rate": 0.02, "num_leaves": 63, "mi
               "subsample_freq": 1, "colsample_bytree": 0.7, "reg_lambda": 5.0}
 XGB_PARAMS = {"n_estimators": 5000, "learning_rate": 0.02, "max_depth": 10, "min_child_weight": 20, "subsample": 0.8,
               "colsample_bytree": 0.5, "reg_lambda": 10.0}
-MODELS = ["hgb", "lightgbm", "xgboost"]
-DEFAULT_MODELS = ["lightgbm", "xgboost"]
+# RealMLP (pytabkit), a neural network for tables, with the settings of a public notebook
+# (kaggle.com/code/yekenot/ps-s6-e10-realmlp-pytabkit); 8 networks of 3 epochs, ~5 min per fold on 22 CPU cores
+REALMLP_PARAMS = {"n_ens": 8, "n_epochs": 3, "batch_size": 288, "lr": 0.053, "wd": 0.015, "sq_mom": 0.988,
+                  "lr_sched": "flat_anneal", "first_layer_lr_factor": 0.25, "embedding_size": 5,
+                  "max_one_hot_cat_size": 2, "hidden_sizes": [512, 256, 128], "act": "silu", "p_drop": 0.05,
+                  "p_drop_sched": "pow5", "plr_hidden_1": 16, "plr_hidden_2": 8, "plr_act_name": "gelu",
+                  "plr_lr_factor": 0.1151, "plr_sigma": 0.75, "ls_eps": 0.01, "use_early_stopping": False}
+MODELS = ["hgb", "lightgbm", "xgboost", "realmlp"]
+DEFAULT_MODELS = ["lightgbm", "xgboost", "realmlp"]
+# Weights of the models' logits in the average (models not listed: 1). The trees agree with each other
+# (correlation 0.999) more than with RealMLP (0.993), so RealMLP gets as much weight as both trees together.
+WEIGHTS = {"realmlp": 2.0}
 
 
 def load_competition() -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -177,6 +196,8 @@ def fit_predict(kind: str, params: dict, X_fit, y_fit, frames: list) -> tuple[li
     if kind == "hgb":
         fitted = model(params).fit(X_fit, y_fit)
         return [fitted.predict_proba(f)[:, 1] for f in frames], fitted.n_iter_, None
+    if kind == "realmlp":
+        return realmlp_fit_predict(X_fit, y_fit, frames), REALMLP_PARAMS["n_epochs"], None
     cut = int(len(X_fit) * 0.9)  # early stopping on the last 10% of the training fold, like HGB's
     if kind == "xgboost":
         import xgboost as xgb
@@ -190,6 +211,32 @@ def fit_predict(kind: str, params: dict, X_fit, y_fit, frames: list) -> tuple[li
         callbacks=[lgb.early_stopping(200, verbose=False)])
     gain = pd.Series(fitted.booster_.feature_importance("gain"), index=X_fit.columns)
     return [fitted.predict_proba(f)[:, 1] for f in frames], fitted.best_iteration_, gain / gain.sum()
+
+
+def realmlp_inputs(frames: list[pd.DataFrame]) -> list[pd.DataFrame]:
+    """RealMLP's own inputs: the competition's raw columns, and every number also as a category and as how often
+    its value occurs in all frames together (no labels). Other inputs than the trees' make it disagree more."""
+    raw = [c for c in frames[0].columns if c in RAW_COLUMNS]
+    numeric = [c for c in raw if c not in CATEGORICAL]
+    together = pd.concat([f[numeric] for f in frames])
+    out = []
+    for f in frames:
+        R = f[raw].copy()
+        for c in numeric:
+            R[f"{c} as category"] = pd.Categorical(f[c].fillna(-1).astype(int), categories=sorted(
+                together[c].fillna(-1).astype(int).unique()))
+            R[f"{c} count"] = f[c].map(together[c].value_counts()).fillna(0).astype("float32")
+            R[c] = R[c].fillna(together[c].median()).astype("float32")
+        out.append(R)
+    return out
+
+
+def realmlp_fit_predict(X_fit: pd.DataFrame, y_fit: pd.Series, frames: list) -> list[np.ndarray]:
+    from pytabkit import RealMLP_TD_Classifier
+    R_fit, *R_frames = realmlp_inputs([X_fit, *frames])
+    fitted = RealMLP_TD_Classifier(**REALMLP_PARAMS, random_state=SEED, val_metric_name="1-auc_ovr", device="cpu",
+                                   verbosity=0).fit(R_fit, y_fit.to_numpy())
+    return [fitted.predict_proba(R)[:, 1] for R in R_frames]
 
 
 def logit(p: np.ndarray) -> np.ndarray:
@@ -229,7 +276,8 @@ def cross_validate(train: pd.DataFrame, test: pd.DataFrame, extra: pd.DataFrame 
             parts.append(f"{kind} {rows[-1]['roc_auc']:.5f} ({rounds} rounds)")
             if gain is not None:
                 gains.append(gain)
-        p_val, p_test = (1 / (1 + np.exp(-np.mean(lg, axis=0))) for lg in (val_logits, test_logits))
+        weights = [WEIGHTS.get(kind, 1.0) for kind in models]
+        p_val, p_test = (1 / (1 + np.exp(-np.average(lg, axis=0, weights=weights))) for lg in (val_logits, test_logits))
         scores.append(roc_auc_score(y.iloc[val_idx], p_val))
         rows.append({"fold": k + 1, "model": "+".join(models), "roc_auc": scores[-1], "rounds": None})
         oof[val_idx] = p_val
@@ -285,7 +333,9 @@ def main():
                     "original_rows": 0 if extra is None else len(extra), "original_rates": args.original_rates,
                     "target_encoding": args.target_encode,
                     **({f"lgb_{k}": v for k, v in LGB_PARAMS.items()} if "lightgbm" in args.models else {}),
-                    **({f"xgb_{k}": v for k, v in XGB_PARAMS.items()} if "xgboost" in args.models else {})}
+                    **({f"xgb_{k}": v for k, v in XGB_PARAMS.items()} if "xgboost" in args.models else {}),
+                    **({f"realmlp_{k}": v for k, v in REALMLP_PARAMS.items()} if "realmlp" in args.models else {}),
+                    "weights": {m: WEIGHTS.get(m, 1.0) for m in args.models}}
         log_run(settings, scores, details, train[TARGET].to_numpy(), digest)
 
 

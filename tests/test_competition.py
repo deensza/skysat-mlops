@@ -72,6 +72,21 @@ def test_target_encoding_never_sees_the_labels_it_is_scored_on():
                                               None, {"max_iter": 30}, folds=3, target_encode=True)
     assert len(scores) == 3
 
+
+def test_realmlp_gets_raw_columns_numbers_as_categories_and_counts(monkeypatch):
+    pytest.importorskip("pytabkit")  # local training only (requirements-train.txt), not in CI
+    monkeypatch.setattr(competition, "REALMLP_PARAMS", {**competition.REALMLP_PARAMS, "n_ens": 1, "n_epochs": 1,
+                                                        "hidden_sizes": [16]})
+    train = competition_like(400, seed=1)
+    train[competition.TARGET] = train[competition.TARGET].astype(int)
+    test = competition_like(100, seed=2).drop(columns=[competition.TARGET])
+    fit, other = competition.realmlp_inputs([train.drop(columns=[competition.TARGET]), test])
+    assert {"Age", "Age as category", "Age count", "Class"} <= set(fit.columns) and "id" not in fit.columns
+    assert list(fit.columns) == list(other.columns) and not fit.select_dtypes("number").isna().any().any()
+    scores, pred, _ = competition.cross_validate(train, test, None, {"max_iter": 30}, folds=3,
+                                                 models=["lightgbm", "realmlp"])
+    assert len(scores) == 3 and ((pred >= 0) & (pred <= 1)).all()
+
 def test_a_logged_run_has_scores_per_model_plots_tables_and_a_report(tmp_path, monkeypatch):
     import mlflow
     uri = f"sqlite:///{tmp_path}/mlflow.db"
