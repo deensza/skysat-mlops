@@ -24,6 +24,10 @@ Chosen by 5-fold CV ROC AUC on the competition train rows (2026-10-20), defaults
         + original dataset                                                  0.95804 ± 0.00056
     learning_rate 0.05, max_iter 1000, max_leaf_nodes 127                   0.95853 ± 0.00053  <- default
 max_iter is an upper limit: early stopping (on 10% of each training fold) ends training sooner.
+
+2026-10-30, same folds: LightGBM (LGB_PARAMS, early stopping on the last 10% of each training fold) beat the HGB
+above in all 5 folds, and the average of both models' logits beat both:
+    hgb 0.95852 | lightgbm 0.95899 | average of logits 0.95904  <- default (--models hgb lightgbm)
 """
 
 import argparse
@@ -49,6 +53,9 @@ CATEGORICAL = ["Gender", "Customer Type", "Type of Travel", "Class"]
 SEED = 42
 
 DEFAULT_PARAMS = {"learning_rate": 0.05, "max_iter": 1000, "max_leaf_nodes": 127}
+LGB_PARAMS = {"n_estimators": 3000, "learning_rate": 0.02, "num_leaves": 63, "min_child_samples": 40, "subsample": 0.8,
+              "subsample_freq": 1, "colsample_bytree": 0.7, "reg_lambda": 5.0}
+MODELS = ["hgb", "lightgbm"]
 
 
 def load_competition() -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -80,9 +87,28 @@ def model(params: dict) -> HistGradientBoostingClassifier:
     return HistGradientBoostingClassifier(categorical_features="from_dtype", random_state=SEED, **params)
 
 
+def fit_predict(kind: str, params: dict, X_fit, y_fit, frames: list) -> tuple[list[np.ndarray], int]:
+    """Train one model on the fit rows; P(satisfied) for each frame in frames, and its number of rounds."""
+    if kind == "hgb":
+        fitted = model(params).fit(X_fit, y_fit)
+        return [fitted.predict_proba(f)[:, 1] for f in frames], fitted.n_iter_
+    import lightgbm as lgb
+    cut = int(len(X_fit) * 0.9)  # early stopping on the last 10% of the training fold, like HGB's
+    fitted = lgb.LGBMClassifier(**LGB_PARAMS, random_state=SEED, verbose=-1).fit(
+        X_fit.iloc[:cut], y_fit.iloc[:cut], eval_set=[(X_fit.iloc[cut:], y_fit.iloc[cut:])], eval_metric="auc",
+        callbacks=[lgb.early_stopping(200, verbose=False)])
+    return [fitted.predict_proba(f)[:, 1] for f in frames], fitted.best_iteration_
+
+
+def logit(p: np.ndarray) -> np.ndarray:
+    p = np.clip(p, 1e-6, 1 - 1e-6)
+    return np.log(p / (1 - p))
+
+
 def cross_validate(train: pd.DataFrame, test: pd.DataFrame, extra: pd.DataFrame | None, params: dict,
-                   folds: int = 5) -> tuple[list[float], np.ndarray]:
-    """Per-fold ROC AUC on held-out competition rows, and the test predictions averaged over the folds."""
+                   folds: int = 5, models: list[str] = ("hgb",)) -> tuple[list[float], np.ndarray]:
+    """Per-fold ROC AUC on held-out competition rows, and the test predictions averaged over the folds.
+    With several models, each fold's prediction is the average of the models' logits."""
     frames = [train, test] + ([extra] if extra is not None else [])
     categories = {c: CategoricalDtype(sorted(pd.concat([f[c] for f in frames]).dropna().unique())) for c in CATEGORICAL}
     X, y, X_test = features(train, categories), train[TARGET], features(test, categories)
@@ -93,10 +119,16 @@ def cross_validate(train: pd.DataFrame, test: pd.DataFrame, extra: pd.DataFrame 
         X_fit, y_fit = X.iloc[fit_idx], y.iloc[fit_idx]
         if X_extra is not None:  # external rows only ever train; they are never scored
             X_fit, y_fit = pd.concat([X_fit, X_extra]), pd.concat([y_fit, extra[TARGET]])
-        fitted = model(params).fit(X_fit, y_fit)
-        scores.append(roc_auc_score(y.iloc[val_idx], fitted.predict_proba(X.iloc[val_idx])[:, 1]))
-        test_pred += fitted.predict_proba(X_test)[:, 1] / folds
-        print(f"  fold {k + 1}/{folds}: roc_auc {scores[-1]:.5f} ({fitted.n_iter_} rounds)", flush=True)
+        val_logits, test_logits, parts = [], [], []
+        for kind in models:
+            (p_val, p_test), rounds = fit_predict(kind, params, X_fit, y_fit, [X.iloc[val_idx], X_test])
+            val_logits.append(logit(p_val))
+            test_logits.append(logit(p_test))
+            parts.append(f"{kind} {roc_auc_score(y.iloc[val_idx], p_val):.5f} ({rounds} rounds)")
+        p_val, p_test = (1 / (1 + np.exp(-np.mean(lg, axis=0))) for lg in (val_logits, test_logits))
+        scores.append(roc_auc_score(y.iloc[val_idx], p_val))
+        test_pred += p_test / folds
+        print(f"  fold {k + 1}/{folds}: roc_auc {scores[-1]:.5f} | " + ", ".join(parts), flush=True)
     return scores, test_pred
 
 
@@ -118,6 +150,7 @@ def main():
     ap.add_argument("--learning-rate", type=float, default=DEFAULT_PARAMS["learning_rate"])
     ap.add_argument("--max-iter", type=int, default=DEFAULT_PARAMS["max_iter"])
     ap.add_argument("--max-leaf-nodes", type=int, default=DEFAULT_PARAMS["max_leaf_nodes"])
+    ap.add_argument("--models", nargs="+", choices=MODELS, default=MODELS, help="several = average of their logits")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--no-mlflow", action="store_true", help="do not log the run (quick experiments)")
     args = ap.parse_args()
@@ -126,9 +159,9 @@ def main():
     extra = load_original(list(train.columns)) if args.original else None
     params = {"learning_rate": args.learning_rate, "max_iter": args.max_iter, "max_leaf_nodes": args.max_leaf_nodes}
     print(f"competition train {len(train):,} rows ({train[TARGET].mean():.1%} satisfied), test {len(test):,} rows, "
-          f"original added: {0 if extra is None else len(extra):,} rows | {params}")
+          f"original added: {0 if extra is None else len(extra):,} rows | {args.models} | hgb {params}")
 
-    scores, pred = cross_validate(train, test, extra, params, args.folds)
+    scores, pred = cross_validate(train, test, extra, params, args.folds, args.models)
     path = write_submission(test, pred)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
     print(f"CV roc_auc {np.mean(scores):.5f} ± {np.std(scores):.5f} | wrote {path.relative_to(PROJECT_ROOT)} "
@@ -140,7 +173,8 @@ def main():
         mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI") or "http://localhost:5050")
         mlflow.set_experiment("skysat-kaggle")
         with mlflow.start_run(tags={"purpose": "kaggle", "git_commit": git_commit(), "submission_sha256": digest}):
-            mlflow.log_params({**params, "model": "hist_gradient_boosting", "folds": args.folds,
+            lgb_params = {f"lgb_{k}": v for k, v in LGB_PARAMS.items()} if "lightgbm" in args.models else {}
+            mlflow.log_params({**params, **lgb_params, "model": "+".join(args.models), "folds": args.folds,
                                "original_rows": 0 if extra is None else len(extra), "train_rows": len(train)})
             mlflow.log_metrics({"cv_roc_auc_mean": float(np.mean(scores)), "cv_roc_auc_std": float(np.std(scores)),
                                 **{f"cv_roc_auc_fold{k + 1}": s for k, s in enumerate(scores)}})

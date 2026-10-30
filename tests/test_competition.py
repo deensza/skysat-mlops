@@ -1,6 +1,7 @@
 """Checks for the competition track (training/competition.py) on fake data shaped like the Kaggle files."""
 
 import pandas as pd
+import pytest
 
 from tests.test_data_and_drift import make_raw
 from training import competition
@@ -13,11 +14,12 @@ def competition_like(n: int, seed: int) -> pd.DataFrame:
     return df
 
 
-def test_cross_validation_scores_every_fold_and_predicts_the_test_set():
+@pytest.mark.parametrize("models", [["hgb"], ["lightgbm"], competition.MODELS])
+def test_cross_validation_scores_every_fold_and_predicts_the_test_set(models):
     train = competition_like(600, seed=1)
     train[competition.TARGET] = train[competition.TARGET].astype(int)
     test = competition_like(200, seed=2).drop(columns=[competition.TARGET])
-    scores, pred = competition.cross_validate(train, test, None, {"max_iter": 30}, folds=3)
+    scores, pred = competition.cross_validate(train, test, None, {"max_iter": 30}, folds=3, models=models)
     assert len(scores) == 3 and all(s > 0.9 for s in scores)  # the fake label is learnable
     assert len(pred) == len(test) and ((pred >= 0) & (pred <= 1)).all()
 

@@ -19,10 +19,10 @@ Open points (tick when done):
 - [ ] Record the video ([demo/video.md](../demo/video.md)) and put its link on slide 11
 - [ ] Upload slides (with the GitHub link) and code to Moodle
 - [ ] Decide on CD: switch on the deploy step (self-hosted runner on one PC) or present it as "built, off" (slide 10)
-- [ ] At the end: merge `osm` into `main` → CT on GitHub trains the 9 candidates (incl. `ensemble`, local
+- [x] At the end: merge `osm` into `main` → CT on GitHub trains the 9 candidates (incl. `ensemble`, local
       validation ROC AUC 0.99605, logit-averaged) on DagsHub → both rebuild the API image (`make d-build`) → update slide 6
       with the new champion. Not before: `main`'s code cannot load an ensemble (same failure as the LightGBM
-      champion, slide 12)
+      champion, slide 12). Done 2026-10-30: ensemble = champion v36 (0.9960). Each PC: `git pull`, `make d-build`
 - [ ] Rehearse once with a timer (target: ~10 min slides + 3 min video + questions)
 
 ---
@@ -105,12 +105,13 @@ flowchart LR
 ## 6. Training and model selection
 
 - Same data split for every model: 83,123 training rows, 20,781 validation rows (never used to choose settings)
-- 8 standard candidates trained by CT; the **quality gate**: register if ROC AUC ≥ 0.95, `champion` only if it
+- 9 standard candidates trained by CT; the **quality gate**: register if ROC AUC ≥ 0.95, `champion` only if it
   beats the current champion **re-scored on the same rows**
 
 | Model | Validation ROC AUC (3 seeds) |
 |---|---|
-| gradient boosting, tuned by 5-fold CV on training rows only | **0.9958** (current champion, v8) |
+| ensemble: tuned gradient boosting + tuned LightGBM + tuned MLP, logits averaged | **0.9960** (champion, v36) |
+| gradient boosting, tuned by 5-fold CV on training rows only | 0.9958 (champion v8 before) |
 | LightGBM | 0.9957 |
 | XGBoost | 0.9955 |
 | MLP (PyTorch), one-hot ratings | 0.9954 |
@@ -204,7 +205,7 @@ Video: *(link)* · Script: [demo/video.md](../demo/video.md)
 - Same dataset family: Kaggle Playground S6E10 *Predicting Airline Satisfaction* (metric ROC AUC)
 - Separate pipeline (other columns; data must stay on our PCs): 5-fold CV, logged to MLflow, every submission
   traceable by its sha256
-- CV ROC AUC 0.95853 ± 0.00053 *(update with the final submission)*
+- CV ROC AUC 0.95905 ± 0.00056 (gradient boosting + LightGBM, logits averaged; was 0.95853) *(add the public score)*
 
 ## 14. Summary and questions
 
