@@ -6,7 +6,7 @@ submitted with the same MLOps habits as the serving model. Code: [training/compe
 
 Open points (tick when done):
 
-- [ ] Final submission made (`make submit`) and its public score known
+- [x] Final submission made (`make submit`, 2026-10-30): public 0.95982, CV 0.96013, sha256 ad609290c4a3, DagsHub run 27ebe4bbd893
 - [ ] Rehearsal: run every scene once, fill in "Rehearsal log"
 - [x] Record, cut, upload: [Google Drive](https://drive.google.com/drive/folders/1WBdX3AQdVqQV6cO-wTW8shrivhatKatB). Link on slide 13 of [docs/presentation.md](../docs/presentation.md)
 
@@ -29,7 +29,7 @@ Open points (tick when done):
 | 5 | 1:30–1:50 | Terminal | `make submit MSG="..."`, then `make kaggle-scores` | "Upload with a message that says what changed; the public score comes back next to it." |
 | 6 | 1:50–2:05 | Kaggle → Leaderboard / My submissions | – | "Public score vs. our CV: close, so the CV is honest. The final ranking uses the private part of the test set." |
 
-- Numbers to say: fill in from the rehearsal; before: hgb CV 0.95853, public 0.95789; now: hgb + LightGBM + original-data rates, CV 0.96013 ± 0.00053 (sha256 ad609290c4a3).
+- Numbers to say: fill in from the rehearsal; before: hgb CV 0.95853, public 0.95789; now: hgb + LightGBM + original-data rates, CV 0.96013 ± 0.00053 (sha256 ad609290c4a3), public 0.95982.
 - Waiting in scene 2 is cut; say how long it really took.
 
 ## Rehearsal log

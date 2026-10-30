@@ -58,6 +58,14 @@ def read_bytes(path: Path, name: str) -> bytes:
     return path.read_bytes()
 
 
+def data_tags() -> dict:
+    """sha256 of the files CT trains on, as run tags: the same hashes as the data card (missing files are left out)."""
+    files = {"data.original.train.sha256": DATA_DIR / "train.csv", "data.original.test.sha256": DATA_DIR / "test.csv",
+             "data.processed.train.sha256": PROCESSED_DIR / "train.csv",
+             "data.processed.validation.sha256": PROCESSED_DIR / "validation.csv"}
+    return {tag: hashlib.sha256(path.read_bytes()).hexdigest() for tag, path in files.items() if path.exists()}
+
+
 def satisfied_share(target: pd.Series) -> float:
     """Share of satisfied passengers, whatever the file calls them (1, True or "satisfied")."""
     return float(target.astype(str).str.lower().isin(["1", "true", "satisfied"]).mean())

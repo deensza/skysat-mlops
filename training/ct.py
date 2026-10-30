@@ -26,6 +26,7 @@ import mlflow
 from mlflow import MlflowClient
 
 from skysat import schema
+from training.data_card import ORIGINAL_URL, data_tags
 from training.insight import log_insights, model_settings, run_params
 from training.track import EXPERIMENT, ROC_AUC_THRESHOLD, champion_auc_on, git_commit, load_data, register
 from training.train import DEFAULT_PARAMS, SKLEARN_MODELS, load_bundle, run_training
@@ -78,8 +79,12 @@ def train_and_register(client: MlflowClient, train_df, val_df, name: str, overri
     """Train one model, log it to MLflow, apply the quality gate. champion_auc: the champion's score on the same
     validation rows (None: no champion yet). Returns (roc_auc, registered version or None)."""
     params = {**DEFAULT_PARAMS, **overrides}
-    tags = {"git_commit": git_commit(), "purpose": "ct", "model_type": params["model"]}
+    tags = {"git_commit": git_commit(), "purpose": "ct", "model_type": params["model"], **data_tags()}
     with tempfile.TemporaryDirectory() as tmp, mlflow.start_run(run_name=f"ct-{name}", tags=tags) as run:
+        # which data: schema, row count and digest (no rows), the same entries as the data card (make data-card)
+        for df, context in ((train_df, "training"), (val_df, "validation")):
+            mlflow.log_input(mlflow.data.from_pandas(df, source=ORIGINAL_URL, name=f"processed/{context}",
+                                                     targets=schema.TARGET), context=context)
         mlflow.log_params(run_params(params))  # only the settings this model type uses
         mlflow.log_params({"train_rows": len(train_df), "validation_rows": len(val_df)})
         path, metrics = run_training(train_df, val_df, params, Path(tmp))
