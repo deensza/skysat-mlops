@@ -27,7 +27,7 @@ KAGGLE := $(if $(wildcard .venv/bin/kaggle),.venv/bin/kaggle,kaggle)
 -include .env
 export MLFLOW_TRACKING_URI MLFLOW_TRACKING_USERNAME MLFLOW_TRACKING_PASSWORD
 
-.PHONY: help install install-train data train compare graph add-ct list-ct ct-local submission submit kaggle-scores smoke d-up d-build d-down d-ps d-logs d-loadtest d-wipe test compose-check ci
+.PHONY: help install install-train data data-card train compare graph add-ct list-ct ct-local submission submit kaggle-scores smoke d-up d-build d-down d-ps d-logs d-loadtest d-wipe test compose-check ci
 
 help:
 	@awk -F ':.*## ' '/^[a-z-]+:.*## /{printf "%-16s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -41,6 +41,9 @@ install-train: ## add PyTorch, the Kaggle CLI and psycopg to .venv (training, re
 
 data: ## step 2: clean and split data/train.csv + test.csv into data/processed/
 	$(PY) -m training.prepare_data
+
+data-card: ## describe every dataset (rows, schema, satisfied share, sha256; no rows) and log it to MLflow (skysat-data)
+	$(PY) -m training.data_card $(ARGS)
 
 train: ## step 3a: train on data/processed, write artifacts/model.pt
 	$(PY) -m training.train
