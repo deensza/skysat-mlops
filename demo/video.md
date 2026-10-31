@@ -6,9 +6,8 @@ This file: what to film, what to say, how to record, where the video goes.
 
 Open points (tick when done):
 
-- [ ] Rehearsal 1: run every scene once, fill in "Rehearsal log" below
-- [ ] Update [README.md](README.md) table row 1: it still says 5 models and an MLP champion (now: 8 candidates,
-      champion v8 tuned gradient boosting)
+- [x] Rehearsal 1: run every scene once, fill in "Rehearsal log" below (2026-10-31, latest `main`)
+- [x] Update [README.md](README.md) table row 1: 9 candidates, champion v45 (the ensemble)
 - [ ] Record, cut, upload; put the link in [docs/presentation.md](../docs/presentation.md) slide 11 and the main README
 - [ ] Screenshots for the slides into [assets/](assets/)
 
@@ -16,7 +15,7 @@ Open points (tick when done):
 
 | # | Time | Screen | Command | Say |
 |---|---|---|---|---|
-| 1 | 0:00–0:40 | DagsHub → Experiments, then Models → `skysat-satisfaction` | – | "CT trained 8 candidates on GitHub's machines. Each run: settings, scores, the model file. The quality gate gave the `champion` alias to the best: version 8." |
+| 1 | 0:00–0:40 | DagsHub → Experiments, then Models → `skysat-satisfaction` | – | "CT trained 9 candidates on GitHub's machines. Each run: settings, scores, the model file. The quality gate gave the `champion` alias to the best: version 45, the ensemble (tuned gradient boosting + LightGBM + MLP), ROC AUC 0.9960." |
 | 2 | 0:40–1:10 | Terminal, then browser | `dmake smoke` | "One passenger through Nginx: satisfied, the probability, which model version, which of the 3 API copies answered." |
 | 3 | 1:10–1:30 | Grafana (Last 5 minutes) | `dmake simulate` (already run before recording) | "2,000 normal passengers. Accuracy with their real answers: 96%. This is the healthy baseline." |
 | 4 | 1:30–2:00 | Terminal → Grafana | `dmake simulate MODE=drift` | "A winter storm: longer delays, worse ground service. Accuracy drops to about 92%. The model does not know the world changed." |
@@ -51,4 +50,5 @@ files there).
 | Date | Who / machine | Scene | Result (numbers, time) | Problems |
 |---|---|---|---|---|
 | 2026-10-22 | MacBook, Docker Desktop | all | normal 96.25%, storm 91.75%, after retrain 94.75%; PSI 0.44–1.32 on 9 features | – |
+| 2026-10-31 | MacBook, Docker Desktop, `main` @ ee4b654 (images rebuilt) | 2–7 | same numbers: 96.25% / 91.75% / 94.75%, 9 features flagged, champion 0.9557 vs challenger 0.9825, APIs on v2 after ~6 s; whole run ~4 min incl. `dmake d-build` | – |
 | | | | | |
