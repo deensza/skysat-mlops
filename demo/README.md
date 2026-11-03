@@ -2,7 +2,7 @@
 
 Recorded as a video beforehand (waiting moments cut) and narrated live, after the slides. Three parts:
 
-1. **Model selection** – CT trained 5 model types; the quality gate picked the champion (DagsHub).
+1. **Model selection** – CT trained the 9 standard candidates; the quality gate picked the champion (DagsHub).
 2. **Kaggle** – the same approach on the competition data: 5-fold CV, a new submission, the leaderboard score.
 3. **Drift** – the model degrades, the system notices, retrains itself and recovers.
 
@@ -40,7 +40,7 @@ token. Open DagsHub (Models, Experiments) and Grafana at http://localhost:3000 (
 
 | # | Command / screen | What the audience sees |
 |---|---|---|
-| 1 | DagsHub → Models → `skysat-satisfaction` | 5 model types from CT, their ROC AUC, the `champion` alias on the best (MLP) |
+| 1 | DagsHub → Models → `skysat-satisfaction` | the CT candidates, their ROC AUC, the `champion` alias on the best (v45, the ensemble, 0.9960) |
 | 2 | `make submission` | competition track: 5-fold CV ROC AUC per fold → `artifacts/kaggle/submission.csv` (~75 s) |
 | 3 | `make submit MSG="..."` then `make kaggle-scores` | the submission is accepted; its public leaderboard score |
 | 4 | `dmake smoke` | one passenger → *satisfied*, probability, model version, which API copy answered |
@@ -49,7 +49,7 @@ token. Open DagsHub (Models, Experiments) and Grafana at http://localhost:3000 (
 | 7 | `dmake retrain` | retrain, both models scored on the same holdout, the better one becomes champion |
 | 8 | `dmake simulate MODE=drift SEED=2` | new storm passengers, new model: accuracy recovers, Grafana shows version 2 |
 
-- The Kaggle model is **not** one of the 5 CT models: the competition files have other columns, so the competition
+- The Kaggle model is **not** one of the CT models: the competition files have other columns, so the competition
   track ([training/competition.py](../training/competition.py)) trains its own gradient boosting model. Same idea
   (choose by validation score), separate pipeline.
 - The retrained storm model from part 3 is not sent to Kaggle either: it is fitted to simulated storm traffic and

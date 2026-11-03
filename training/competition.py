@@ -53,6 +53,7 @@ threshold, confusion, folds, input importance), tables and report.md. Aggregates
 import argparse
 import hashlib
 import os
+import sys
 import zipfile
 from pathlib import Path
 
@@ -95,6 +96,9 @@ DEFAULT_MODELS = ["lightgbm", "xgboost", "realmlp"]
 # Weights of the models' logits in the average (models not listed: 1). The trees agree with each other
 # (correlation 0.999) more than with RealMLP (0.993), so RealMLP gets as much weight as both trees together.
 WEIGHTS = {"realmlp": 2.0}
+# macOS: after PyTorch has run, multi-threaded LightGBM / XGBoost crash the process (two OpenMP runtimes, see
+# training/__init__.py), so they use one thread there, like training/train.py. Linux uses every core.
+_BOOST_JOBS = 1 if sys.platform == "darwin" else -1
 
 
 def load_competition() -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -202,11 +206,11 @@ def fit_predict(kind: str, params: dict, X_fit, y_fit, frames: list) -> tuple[li
     if kind == "xgboost":
         import xgboost as xgb
         fitted = xgb.XGBClassifier(**XGB_PARAMS, tree_method="hist", enable_categorical=True, max_cat_to_onehot=4,
-                                   eval_metric="auc", early_stopping_rounds=200, random_state=SEED, n_jobs=-1)
+                                   eval_metric="auc", early_stopping_rounds=200, random_state=SEED, n_jobs=_BOOST_JOBS)
         fitted.fit(X_fit.iloc[:cut], y_fit.iloc[:cut], eval_set=[(X_fit.iloc[cut:], y_fit.iloc[cut:])], verbose=False)
         return [fitted.predict_proba(f)[:, 1] for f in frames], fitted.best_iteration, None
     import lightgbm as lgb
-    fitted = lgb.LGBMClassifier(**LGB_PARAMS, random_state=SEED, verbose=-1).fit(
+    fitted = lgb.LGBMClassifier(**LGB_PARAMS, random_state=SEED, n_jobs=_BOOST_JOBS, verbose=-1).fit(
         X_fit.iloc[:cut], y_fit.iloc[:cut], eval_X=X_fit.iloc[cut:], eval_y=y_fit.iloc[cut:], eval_metric="auc",
         callbacks=[lgb.early_stopping(200, verbose=False)])
     gain = pd.Series(fitted.booster_.feature_importance("gain"), index=X_fit.columns)
