@@ -297,9 +297,11 @@ original dataset (83,123 train / 20,781 validation rows):
 **DagsHub (the shared MLflow).** Check DagsHub's pages as you go; its menus may have moved.
 
 1. Both team members create a free DagsHub account.
-2. One of you creates a **private** DagsHub repository (e.g. `skysat-mlops`) and adds the other as a collaborator.
-   Private matters: only collaborators can see the runs and models. The free plan's limits at the time of writing:
-   2 collaborators and 100 tracked runs in a private project (a 5-model round uses 5).
+2. One of you creates a DagsHub repository (e.g. `skysat-mlops`) and adds the other as a collaborator. Ours is
+   **public**: anyone can read the runs, metrics and model files, so the tutor can look without an account; only a
+   token with access can change anything. So never log dataset rows there (we log metrics, plots, small summary
+   tables, the data card and the models). A private repo has lower limits on the free plan: 2 collaborators and 100
+   tracked runs at the time of writing.
 3. Its MLflow address is `https://dagshub.com/<owner>/<repo>.mlflow`. Each of you creates a DagsHub token and puts
    the three `MLFLOW_TRACKING_*` lines from [.env.example](.env.example) into your own `.env`.
 4. **First check:** `make data` then `make ct-local ARGS="--model logistic_regression --rating-one-hot"`. It must end

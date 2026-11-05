@@ -19,7 +19,7 @@ flowchart LR
     subgraph GH["GitHub (always on)"]
         ct["CT workflow<br/>download data, train,<br/>register, promote"]
     end
-    subgraph DH["DagsHub (always on, private)"]
+    subgraph DH["DagsHub (always on, public to read)"]
         mlflow[("shared MLflow<br/>runs + model registry<br/>alias: champion")]
     end
     subgraph PC["The team's server, or a team PC (docker compose)"]
@@ -216,7 +216,7 @@ tests/          pytest, fake data only
 | **job queue / worker** | producers put work in a list; a background process takes it out and does it |
 | **self-hosted runner** | GitHub's job runner installed on our own PC (only for the optional CD step) |
 | **profile** (Compose) | services that only start when you ask for them (`--profile loadtest`) |
-| **DagsHub** | a website that hosts a private MLflow for the team, so the models are not on anyone's PC |
+| **DagsHub** | a website that hosts the team's MLflow, so the models are not on anyone's PC. Anyone can read it; only the team can change it |
 
 ## 11. Known limits
 
@@ -233,6 +233,9 @@ see the model version change if it becomes champion.
   request sometimes stalls for 15–19 s while memory comes back from swap ([measured](server.md#measured-2026-11-05)).
 - **The server has one machine and one login method.** A real system would have several machines and real user
   management; the [gateway](server.md#the-gateway-the-only-way-in) is HTTPS, a rate limit and 2 accounts.
+- **The registry is public to read.** Anyone can read the runs and download the model files on DagsHub; anonymous
+  writes are refused (checked: 403). No dataset rows are logged there: runs hold metrics, plots, small summary tables
+  and models, and the data card holds aggregates and hashes.
 - **Retraining is started by hand** and needs the prediction log, so it cannot run on GitHub like CT. With the DagsHub
   settings in `.env`, its model goes to the shared registry, so the storm demo runs on a PC with its own local MLflow
   ([demo/README.md](../demo/README.md)). Retraining from the server's log is not set up.
