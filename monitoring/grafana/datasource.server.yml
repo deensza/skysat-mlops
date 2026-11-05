@@ -1,0 +1,17 @@
+# The server's data source (docker-compose.server.yml): same database, read-only user (docs/server.md).
+apiVersion: 1
+
+datasources:
+  - name: SkySat PostgreSQL
+    uid: skysat-pg
+    type: grafana-postgresql-datasource
+    url: postgres:5432
+    user: grafana_reader
+    isDefault: true
+    jsonData:
+      database: skysat
+      sslmode: disable
+      postgresVersion: 1700
+      timescaledb: false
+    secureJsonData:
+      password: $GRAFANA_DB_PASSWORD

@@ -36,7 +36,8 @@ dmake simulate                                # 2,000 normal passengers -> Grafa
 ```
 
 Also needed: `data/playground-series-s6e10.zip` (Kaggle → competition → Data; never committed) and a Kaggle
-token. Open DagsHub (Models, Experiments) and Grafana at http://localhost:3000 (time range **Last 5 minutes**).
+token. Open DagsHub (Models, Experiments) and Grafana at http://localhost:3000 (time range **Last 5 minutes**, refresh
+**5s**; the dashboard's default is 30 days and 1 minute, for the server).
 
 ## The demo
 

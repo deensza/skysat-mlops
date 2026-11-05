@@ -42,7 +42,7 @@ jobs:
         run: docker compose --profile loadtest config --quiet
 
       - name: Check the server's compose files
-        run: GRAFANA_ADMIN_PASSWORD=x docker compose -f docker-compose.yml -f docker-compose.server.yml config --quiet
+        run: SITE_ADDRESS=x GRAFANA_ADMIN_PASSWORD=x GRAFANA_DB_PASSWORD=x docker compose -f docker-compose.yml -f docker-compose.server.yml config --quiet
 
   image:
     needs: test
@@ -95,4 +95,4 @@ jobs:
         run: docker compose up -d --no-build
 
       - name: Smoke test through Nginx  # up to 6 min: a restart is slow on the server's 1 GB of RAM
-        run: bash .github/scripts/smoke-test.sh http://localhost 120
+        run: bash .github/scripts/smoke-test.sh http://localhost:8080 120  # the gateway's port for the server itself

@@ -1,0 +1,6 @@
+# HTTPS for the server (docs/server.md). Caddy gets and renews the certificate by itself; port 80 redirects here.
+{$SITE_ADDRESS} {
+	header Strict-Transport-Security "max-age=31536000"
+	header -Server
+	reverse_proxy nginx:80
+}

@@ -15,7 +15,9 @@ Examples (run from the project root):
 """
 
 import argparse
+import base64
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -54,7 +56,11 @@ def to_request(row: pd.Series) -> dict:
 
 def post_json(url: str, body: dict) -> dict:
     data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    headers = {"Content-Type": "application/json"}
+    login = os.environ.get("SKYSAT_LOGIN")  # user:password for the server's gateway (make simulate-server)
+    if login:
+        headers["Authorization"] = "Basic " + base64.b64encode(login.encode()).decode()
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=10) as resp:
         return json.load(resp)
 

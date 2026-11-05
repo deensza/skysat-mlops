@@ -226,13 +226,13 @@ see the model version change if it becomes champion.
 | Part | Where it runs | Who sees it |
 |---|---|---|
 | CT, runs, model registry, champion | GitHub + DagsHub, always on | the whole team |
-| API, Nginx, PostgreSQL, Grafana | the [server](server.md), always on | anyone (Grafana: with the login) |
+| API, Nginx, PostgreSQL, Grafana | the [server](server.md), always on, behind a gateway | the 2 accounts with a login |
 | The same stack for development and the drift demo | Docker on a team PC, only while it is on | that PC only |
 
 - **The server is small.** 1 GB of RAM runs 1 API copy, so load balancing and scaling are only shown on a PC, and a
   request sometimes stalls for 15–19 s while memory comes back from swap ([measured](server.md#measured-2026-11-05)).
-- **The server is not hardened.** No HTTPS (the Grafana password travels unencrypted) and no rate limit on the API.
-  Fine for a course demo with made-up passengers; a real system needs both.
+- **The server has one machine and one login method.** A real system would have several machines and real user
+  management; the [gateway](server.md#the-gateway-the-only-way-in) is HTTPS, a rate limit and 2 accounts.
 - **Retraining is started by hand** and needs the prediction log, so it cannot run on GitHub like CT. With the DagsHub
   settings in `.env`, its model goes to the shared registry, so the storm demo runs on a PC with its own local MLflow
   ([demo/README.md](../demo/README.md)). Retraining from the server's log is not set up.

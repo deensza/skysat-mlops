@@ -118,13 +118,16 @@ compose-check: ## validate docker-compose.yml (all profiles)
 ci: test compose-check ## same two checks as the GitHub Actions workflow
 
 # Steps 6-7 from make (also the step 9 demo, see demo/README.md): send traffic to the running stack, then retrain
-.PHONY: simulate retrain
+.PHONY: simulate simulate-server retrain
 MODE ?= normal
 N ?= 2000
 SEED ?= 0
 
 simulate: ## steps 6-7: send passengers to the API on :8080: make simulate MODE=drift N=2000 SEED=2
 	$(PY) -m simulator.simulate generate --mode $(MODE) --n $(N) --seed $(SEED) --url http://localhost:8080/predict
+
+simulate-server: ## send passengers to the team's server through its gateway (docs/server.md): make simulate-server N=2000
+	SKYSAT_LOGIN=team:$$(cat ~/.config/skysat/login-team) $(PY) -m simulator.simulate generate --mode $(MODE) --n $(N) --seed $(SEED) --url https://$$(cat ~/.config/skysat/server-address)/predict
 
 retrain: ## step 7: drift check, retrain, promote if better; ARGS=--check-only to only measure; refuses the shared MLflow
 	@case "$(MLFLOW_TRACKING_URI) $(ARGS) $(SHARED)" in *dagshub*--check-only*|*dagshub*yes) ;; *dagshub*) \

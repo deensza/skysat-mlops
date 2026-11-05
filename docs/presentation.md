@@ -233,5 +233,8 @@ Video: [Google Drive](https://drive.google.com/drive/folders/1WBdX3AQdVqQV6cO-wT
 - How do you stop a worse model from going to production? (quality gate, same rows for both models)
 - Why 3 API copies and not 10? (CPU-bound; measured scaling)
 - Where does production run? (A small always-on Azure VM, [server.md](server.md); its limits are in
-  [architecture.md](architecture.md) section 11: 1 copy, occasional stalls, no HTTPS)
+  [architecture.md](architecture.md) section 11: 1 copy, occasional stalls)
+- Can anyone use or damage it? (HTTPS, rate limit before login, 2 accounts, only ports 80 and 443 open, Grafana reads
+  with a read-only database user. Each was attacked from outside, the results are in [server.md](server.md))
+- What if it crashes? (Docker restarts containers; a watchdog restarts a hung API. Each failure was caused on purpose)
 - Does it retrain by itself? (The drift check and the retraining are one command; nothing starts them on its own)
