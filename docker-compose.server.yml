@@ -1,0 +1,35 @@
+# The stack on the always-on server (docs/server.md). Used on top of docker-compose.yml:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.server.yml (set in the server's .env)
+# Only what must differ on the public internet: restart after a reboot, no local MLflow (the API loads the champion
+# from DagsHub), PostgreSQL closed to the outside, Grafana behind a login.
+services:
+  hello:
+    profiles: ["off"]
+
+  mlflow:
+    profiles: ["off"]
+
+  api:
+    restart: unless-stopped
+    deploy:
+      replicas: 2  # the server has 1 GB of RAM (+ swap); one copy peaks at about 460 MB
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+
+  nginx:
+    restart: unless-stopped
+    ports: !override
+      - "80:80"
+
+  postgres:
+    restart: unless-stopped
+    ports: !override
+      - "127.0.0.1:5432:5432"  # reachable only on the server itself (from a laptop: an SSH tunnel)
+
+  grafana:
+    restart: unless-stopped
+    environment:
+      # Grafana's viewers can send their own SQL to the data source, so no anonymous viewers on the internet
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in the server .env}
