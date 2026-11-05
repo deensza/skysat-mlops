@@ -234,7 +234,7 @@ The map of all the pieces is in [docs/architecture.md](docs/architecture.md). Th
 |---|---|---|---|---|
 | **CI** | `ci.yml` → `test`, `image` | GitHub's servers | every push / pull request | pytest on **fake data** (incl. training every model type), compose check, API image build |
 | **CT** | `ct.yml` → `train` | GitHub's servers | `make add-ct`, the *Run workflow* button, new training code on `main` | download the dataset, train, register, promote the best: all in the **shared MLflow** |
-| **CD** | `ci.yml` → `deploy` | a team PC (self-hosted runner), optional | push to `main`, after CI | push image to `ghcr.io/<repo>-api`, pull it on the PC, `docker compose up -d`, smoke test |
+| **CD** | `ci.yml` → `deploy` | [the team's server](docs/server.md) (self-hosted runner), once switched on | push to `main`, after CI | push image to `ghcr.io/<repo>-api`, pull it on the server, `docker compose up -d`, smoke test |
 
 Drift retraining (step 7, `python -m training.retrain`) stays a command you run where the stack is running,
 because it needs that machine's prediction log; with the shared MLflow set in `.env` its model lands there too.
@@ -318,14 +318,8 @@ Secrets never appear in logs, and runs started by strangers' pull requests never
 start a workflow by hand once its file is on `main`, so merge first; after that `make add-ct CT_REF=<branch>`
 trains with another branch's code.
 
-**Optional, CD to a PC (self-hosted runner).** Only for a PC that is on when you push to `main`.
-
-1. On this public repo, first set Settings → Actions → General → *Fork pull request workflows from outside
-   collaborators* → **Require approval for all external contributors**, and never approve runs from strangers:
-   otherwise a stranger's pull request could edit a workflow to run code on that PC.
-2. Settings → Actions → Runners → **New self-hosted runner** (Linux x64), label `skysat`, install it as a service
-   (`sudo ./svc.sh install && sudo ./svc.sh start`). The runner user needs Docker without sudo.
-3. Set the repository variable `DEPLOY_TO_RUNNER` to `true`. Without it the `deploy` job is skipped.
+**CD to the server (self-hosted runner).** The steps are in [docs/server.md](docs/server.md). Without the repository
+variable `DEPLOY_TO_RUNNER=true` the `deploy` job is skipped.
 
 ## Step 9 – Demo scenario and documentation
 

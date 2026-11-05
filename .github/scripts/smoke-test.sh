@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Smoke test after a deploy (step 8): the API answers /health and /predict through Nginx.
-# Usage: bash .github/scripts/smoke-test.sh [base url, default http://localhost:8080]
+# Usage: bash .github/scripts/smoke-test.sh [base url, default http://localhost:8080] [tries, 3 s apart, default 60]
 # The passenger below is made up (not a dataset row).
 set -euo pipefail
 url="${1:-http://localhost:8080}"
+tries="${2:-60}"
 
 echo "Waiting for $url/health (needs MLflow up and a champion model) ..."
-for _ in $(seq 60); do
+for _ in $(seq "$tries"); do
   if curl -fs "$url/health"; then echo; break; fi
   sleep 3
 done

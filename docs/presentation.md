@@ -18,7 +18,8 @@ Open points (tick when done):
 - [ ] Re-measure the numbers marked *(re-check)* on the final stack before presenting
 - [ ] Record the video ([demo/video.md](../demo/video.md)) and put its link on slide 11
 - [ ] Upload slides (with the GitHub link) and code to Moodle
-- [ ] Decide on CD: switch on the deploy step (self-hosted runner on one PC) or present it as "built, off" (slide 10)
+- [ ] CD: the repository owner switches on the deploy step on the server ([server.md](server.md)), then prove it with a
+      push to `main`. Until that has worked, slide 10 must say "built, not yet switched on"
 - [x] At the end: merge `osm` into `main` → CT on GitHub trains the 9 candidates (incl. `ensemble`, local
       validation ROC AUC 0.99605, logit-averaged) on DagsHub → both rebuild the API image (`make d-build`) → update slide 6
       with the new champion. Not before: `main`'s code cannot load an ensemble (same failure as the LightGBM
@@ -100,9 +101,9 @@ flowchart LR
 
 > Notes: two loops: the **training loop** (GitHub → DagsHub) and the **serving loop** (simulator → API → log →
 > Grafana). Drift detection connects them: production data goes back into training. Full description:
-> [architecture.md](architecture.md). Say the limit before anyone asks: training and the registry are shared and
-> always on; serving and monitoring run on one team PC, each PC with its own prediction log. A real system would
-> run them on a server.
+> [architecture.md](architecture.md). Training and the registry are shared and always on. Serving and monitoring run
+> on the team's small Azure server ([server.md](server.md)): 1 API copy on 1 GB of RAM. The 3 copies and the storm demo
+> run on a PC. Say that limit before anyone asks.
 
 ## 6. Training and model selection
 
@@ -147,7 +148,7 @@ flowchart LR
 | 1 | 356 | 182 ms | 0 |
 | 3 | 856 (2.4×) | 137 ms | 0 |
 
-*(Measured on a MacBook Pro M1 with the first model, an MLP; not yet with the ensemble, which is slower per prediction: re-check)*
+*(Measured on a MacBook Pro M1 with the first model, an MLP; not yet with the ensemble, which is slower per prediction: re-check. The server runs 1 copy, so scaling is a PC measurement)*
 
 > Notes: lesson learned: a first "1 copy" test silently ran with 3 copies (Docker Compose restarted them).
 > Measuring the wrong thing is easy; check what you measure.
@@ -175,8 +176,8 @@ flowchart LR
 - **CI** (every push / PR): tests on **fake data** (incl. training every model type), Docker Compose check, API
   image build
 - **CD** (on `main`): the API image is pushed to GitHub's registry (ghcr.io). The deploy step (pull the image on
-  a team PC, restart, smoke-test through Nginx) is written but **switched off**: it needs a self-hosted runner,
-  and the last `main` run shows `deploy: skipped`
+  the server, restart, smoke-test through Nginx) is written but **not yet switched on**: it needs a self-hosted
+  runner on the server, and the last `main` run shows `deploy: skipped`
 - **CT** (on request + when training code lands on `main`): trains the candidates on GitHub's machines → DagsHub; works with our PCs off
 - Competition data never leaves our PCs: CI uses synthetic passengers, CT downloads the public original dataset
 
@@ -202,6 +203,8 @@ Video: *(link)* · Script: [demo/video.md](../demo/video.md)
 - **Configuration decides where things go.** `make` reads `.env`, so a "local" run went to the shared MLflow.
   The demo now runs in its own Docker project with the shared settings switched off.
 - **Check what you measure**: the load test that was not testing 1 copy (slide 8); seed-to-seed noise vs. "better".
+- **An estimate is not a measurement.** 2 API copies "should fit" on the 1 GB server; a real restart took 6.5 minutes
+  of swapping, about 2 with 1 copy. So the server runs 1 copy.
 
 > Notes: teachers like honest failure stories, and this is exactly what MLOps exists to prevent.
 
@@ -229,6 +232,6 @@ Video: [Google Drive](https://drive.google.com/drive/folders/1WBdX3AQdVqQV6cO-wT
 - What happens if MLflow is down? (API keeps the model it has and retries; logging failure never breaks serving)
 - How do you stop a worse model from going to production? (quality gate, same rows for both models)
 - Why 3 API copies and not 10? (CPU-bound; measured scaling)
-- Is one PC really "production"? (No: known limit, [architecture.md](architecture.md) section 11. Training and the
-  registry are shared; serving and monitoring would move to a server)
+- Where does production run? (A small always-on Azure VM, [server.md](server.md); its limits are in
+  [architecture.md](architecture.md) section 11: 1 copy, occasional stalls, no HTTPS)
 - Does it retrain by itself? (The drift check and the retraining are one command; nothing starts them on its own)

@@ -9,7 +9,8 @@ An airline wants to know, right after a flight, whether a passenger is **satisfi
 Kaggle passenger survey, keep every model in **MLflow**, serve the best one (the **champion**) through a
 **prediction API**, log every prediction to **PostgreSQL**, watch the results in **Grafana**, detect when the
 passengers start to look different (**drift**), and train new models (**CT**). **CI/CD** tests and deploys the
-code. Training runs on GitHub's servers; the rest runs in Docker on whichever team PC is in use.
+code. Training runs on GitHub's servers; the rest runs in Docker on the team's [server](server.md), and on a team
+PC during development and for the drift demo.
 
 ## 2. The big picture
 
@@ -21,8 +22,8 @@ flowchart LR
     subgraph DH["DagsHub (always on, private)"]
         mlflow[("shared MLflow<br/>runs + model registry<br/>alias: champion")]
     end
-    subgraph PC["A team PC (docker compose)"]
-        api["API x3<br/>FastAPI"]
+    subgraph PC["The team's server, or a team PC (docker compose)"]
+        api["API copies<br/>FastAPI"]
         nginx["Nginx :8080<br/>load balancer"]
         pg[("PostgreSQL :5432<br/>predictions")]
         grafana["Grafana :3000<br/>dashboard"]
@@ -219,19 +220,21 @@ tests/          pytest, fake data only
 
 ## 11. Known limits
 
-Training is in the cloud; serving and monitoring are not. The only link between them is the champion in DagsHub.
+The only link between training and serving is the champion in DagsHub: a CT run never shows up in Grafana; you only
+see the model version change if it becomes champion.
 
 | Part | Where it runs | Who sees it |
 |---|---|---|
 | CT, runs, model registry, champion | GitHub + DagsHub, always on | the whole team |
-| API, Nginx, PostgreSQL, Grafana, drift check and retraining | Docker on one team PC, only while it is on | that PC only |
+| API, Nginx, PostgreSQL, Grafana | the [server](server.md), always on | anyone (Grafana: with the login) |
+| The same stack for development and the drift demo | Docker on a team PC, only while it is on | that PC only |
 
-- **"Production" is a team PC.** There is no always-on server, so nothing is served while the PC is off.
-- **No shared monitoring.** Each PC has its own prediction log and Grafana, although all of them serve one champion.
-  A CT run never shows up in Grafana; you only see the model version change if it becomes champion.
-- **Retraining is started by hand** and needs the PC that holds the prediction log, so it cannot run on GitHub
-  like CT. With the DagsHub settings in `.env`, its model goes to the shared registry (the demo avoids this, see
-  [demo/README.md](../demo/README.md)).
-- **CD is written but switched off** (`deploy: skipped`): it needs a self-hosted runner.
+- **The server is small.** 1 GB of RAM runs 1 API copy, so load balancing and scaling are only shown on a PC, and a
+  request sometimes stalls for 15–19 s while memory comes back from swap ([measured](server.md#measured-2026-11-05)).
+- **The server is not hardened.** No HTTPS (the Grafana password travels unencrypted) and no rate limit on the API.
+  Fine for a course demo with made-up passengers; a real system needs both.
+- **Retraining is started by hand** and needs the prediction log, so it cannot run on GitHub like CT. With the DagsHub
+  settings in `.env`, its model goes to the shared registry, so the storm demo runs on a PC with its own local MLflow
+  ([demo/README.md](../demo/README.md)). Retraining from the server's log is not set up.
 - **The k6 load test confuses the drift check.** Its random passengers look nothing like the training data and go
   into the same prediction log. Do not run it before a drift check on that log.
