@@ -117,4 +117,8 @@ A runner uses memory on a small VM and is the one thing that runs outside code h
 | Slowest response | 15.9 s (1 of 30) | 19 s (1 of 60) |
 
 300 simulated passengers over the internet: 0 failures, accuracy 96.67%, 23 ms median inside the API. The occasional
-stall is the price of 1 GB: on a machine with enough RAM the same requests do not have to wait for the disk.
+stall is the price of 1 GB: on a machine with enough RAM the same requests do not have to wait for the disk. Stalls
+were seen around restarts: once warmed up, 659 predictions in 10 minutes took at most 58 ms inside the API.
+
+2,000 passengers through the gateway: 1,253 answered with no server errors; the other 747 failed because the sending
+PC went to sleep. The server did not notice, which is the point of having one. Accuracy over all logged predictions: 96.40%.
