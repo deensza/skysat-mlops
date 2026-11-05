@@ -2,7 +2,7 @@
 
     POST /predict   one passenger (id + 22 features) -> satisfied yes/no and the probability
     POST /feedback  the real answer for an earlier prediction (step 6)
-    GET  /health    200 once a model is loaded (used by Docker and Nginx)
+    GET  /health    200 once a model is loaded and has answered a test passenger (used by Docker and Nginx)
     GET  /model     which registered model version is serving, and its validation metrics
 
 The model comes from the MLflow registry: `skysat-satisfaction@champion`. A background thread
@@ -57,6 +57,14 @@ for col in schema.RATING_FEATURES:
     fields[col] = (int, Field(ge=schema.RATING_MIN, le=schema.RATING_MAX))
 Passenger = create_model("Passenger", __config__=ConfigDict(extra="forbid"), **fields)
 
+# Made up. A new model must answer this passenger before it may serve: a registered champion can be
+# one that this image's code cannot run (it happened: /health said ok while every /predict was a 500).
+TEST_PASSENGER = pd.DataFrame([{
+    schema.ID_COLUMN: 0,
+    **{col: values[0] for col, values in schema.CATEGORICAL_VALUES.items()},
+    **dict.fromkeys(schema.NUMERIC_FEATURES + schema.RATING_FEATURES, 0),
+}])
+
 
 class Feedback(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -78,6 +86,7 @@ class ServingModel:
         with tempfile.TemporaryDirectory() as tmp:
             folder = mlflow.artifacts.download_artifacts(artifact_uri=version.source, dst_path=tmp)
             bundle = load_bundle(model_file(folder))
+        predict_proba(bundle, TEST_PASSENGER)  # raises if this code cannot run it: the old model stays
         before = self.current[0] if self.current else "none"
         self.current = (version.version, version.run_id, bundle, datetime.now(timezone.utc).isoformat())
         log.info("Serving %s version %s (was %s)", MODEL_NAME, version.version, before)
@@ -86,7 +95,7 @@ class ServingModel:
         while True:
             try:
                 self.refresh()
-            except Exception as err:  # MLflow down or no champion yet: keep the old model, retry
+            except Exception as err:  # MLflow down, no champion yet or a model we cannot run: keep the old one, retry
                 log.warning("Model refresh failed: %s", err)
             time.sleep(RELOAD_SECONDS)
 
@@ -189,7 +198,7 @@ def model_info():
         "name": MODEL_NAME,
         "alias": ALIAS,
         "version": version,
-        "model_type": bundle["meta"].get("params", {}).get("model", "mlp"),  # step 8: CT picks among 5 types
+        "model_type": bundle["meta"].get("params", {}).get("model", "mlp"),  # step 8: CT trains many types
         "run_id": run_id,
         "loaded_at": loaded_at,
         "validation_metrics": bundle["meta"]["metrics"],
