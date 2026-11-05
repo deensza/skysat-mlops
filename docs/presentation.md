@@ -33,8 +33,8 @@ Open points (tick when done):
 - The model is the easy part; the project is **everything around it**
 - Public code: github.com/deensza/skysat-mlops
 
-> Notes: introduce the team and the one-sentence goal. Say up front that the model itself is simple on purpose:
-> the topic is the lifecycle, not the algorithm.
+> Notes: introduce the team and the one-sentence goal. Say up front that the topic is the lifecycle, not the
+> algorithm: the model type is one setting, and the pipeline picks the best one by its score.
 
 ## 2. Motivation: why do we need MLOps?
 
@@ -100,7 +100,9 @@ flowchart LR
 
 > Notes: two loops: the **training loop** (GitHub → DagsHub) and the **serving loop** (simulator → API → log →
 > Grafana). Drift detection connects them: production data goes back into training. Full description:
-> [architecture.md](architecture.md).
+> [architecture.md](architecture.md). Say the limit before anyone asks: training and the registry are shared and
+> always on; serving and monitoring run on one team PC, each PC with its own prediction log. A real system would
+> run them on a server.
 
 ## 6. Training and model selection
 
@@ -110,7 +112,7 @@ flowchart LR
 
 | Model | Validation ROC AUC (3 seeds) |
 |---|---|
-| ensemble: tuned gradient boosting + tuned LightGBM + tuned MLP, logits averaged | **0.9960** (champion, v36) |
+| ensemble: tuned gradient boosting + tuned LightGBM + tuned MLP, logits averaged | **0.9960** (champion, v45) |
 | gradient boosting, tuned by 5-fold CV on training rows only | 0.9958 (champion v8 before) |
 | LightGBM | 0.9957 |
 | XGBoost | 0.9955 |
@@ -145,7 +147,7 @@ flowchart LR
 | 1 | 356 | 182 ms | 0 |
 | 3 | 856 (2.4×) | 137 ms | 0 |
 
-*(Measured on a MacBook Pro M1; re-check)*
+*(Measured on a MacBook Pro M1 with the first model, an MLP; not yet with the ensemble, which is slower per prediction: re-check)*
 
 > Notes: lesson learned: a first "1 copy" test silently ran with 3 copies (Docker Compose restarted them).
 > Measuring the wrong thing is easy; check what you measure.
@@ -165,8 +167,8 @@ flowchart LR
 
 - Storm: PSI 0.44–1.32 on exactly the 9 features the storm changes, ≤ 0.004 on the other 13
 
-> Notes: this is the core story of the demo video (scene 3). "The model degrades, the system notices, retrains
-> itself and recovers."
+> Notes: this is the core story of the demo video (scene 3). "The model degrades, the system notices, one command
+> retrains it, and it recovers." Retraining is started by hand: nothing runs it on its own.
 
 ## 10. CI / CD / CT on GitHub Actions
 
@@ -194,6 +196,9 @@ Video: *(link)* · Script: [demo/video.md](../demo/video.md)
   while LightGBM was not yet in the main code; the next CT run and new API copies could not load it. Fix: dependencies
   pinned, the champion replaced by a model the code could load, and a rule: merge the code before a model can become
   the shared champion.
+- **"Healthy" must mean "can answer".** An API image older than the champion said ok on `/health` while every
+  `/predict` failed with a 500; the smoke test caught it. Now a new model must answer a test passenger before it
+  may serve; if it cannot, the old one stays.
 - **Configuration decides where things go.** `make` reads `.env`, so a "local" run went to the shared MLflow.
   The demo now runs in its own Docker project with the shared settings switched off.
 - **Check what you measure**: the load test that was not testing 1 copy (slide 8); seed-to-seed noise vs. "better".
@@ -206,13 +211,13 @@ Video: *(link)* · Script: [demo/video.md](../demo/video.md)
 - Separate pipeline (other columns; data must stay on our PCs): 5-fold CV, logged to MLflow, every submission
   traceable by its sha256
 - CV ROC AUC 0.96113 ± 0.00054 (LightGBM + XGBoost + RealMLP neural network, inputs from the original dataset and
-  in-fold target encoding; was 0.95853), public leaderboard 0.96091 (was 0.95789; public #1 0.96451 on 2026-10-30)
+  in-fold target encoding; was 0.95853), public leaderboard 0.96091 (was 0.95789; public #1 0.96451 on 2026-10-30), private score 0.96151
 
 Video: [Google Drive](https://drive.google.com/drive/folders/1WBdX3AQdVqQV6cO-wTW8shrivhatKatB) · Script: [demo/kaggle-video.md](../demo/kaggle-video.md)
 
 ## 14. Summary and questions
 
-- Built: a simple model with the **full lifecycle**: tracked, registered, packaged, served, scaled, monitored,
+- Built: a model with the **full lifecycle**: tracked, registered, packaged, served, scaled, monitored,
   drift-aware, retrained, automated
 - Code and docs: github.com/deensza/skysat-mlops · Data: Kaggle Playground S6E10 (CC BY 4.0) and the original
   Airline Passenger Satisfaction dataset
@@ -224,3 +229,6 @@ Video: [Google Drive](https://drive.google.com/drive/folders/1WBdX3AQdVqQV6cO-wT
 - What happens if MLflow is down? (API keeps the model it has and retries; logging failure never breaks serving)
 - How do you stop a worse model from going to production? (quality gate, same rows for both models)
 - Why 3 API copies and not 10? (CPU-bound; measured scaling)
+- Is one PC really "production"? (No: known limit, [architecture.md](architecture.md) section 11. Training and the
+  registry are shared; serving and monitoring would move to a server)
+- Does it retrain by itself? (The drift check and the retraining are one command; nothing starts them on its own)

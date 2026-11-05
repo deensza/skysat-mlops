@@ -4,6 +4,7 @@
 //   docker compose --profile loadtest run --rm --no-deps k6                  # 50 users, 30 s
 //   docker compose --profile loadtest run --rm --no-deps -e VUS=100 k6
 // --no-deps matters: without it `run` also re-applies replicas: 3 to the API and spoils a 1-copy test.
+// These passengers are random and go into the prediction log, so a drift check right after this one reports drift.
 import http from 'k6/http';
 import { check } from 'k6';
 

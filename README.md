@@ -141,7 +141,8 @@ curl localhost:8080/model          # serving version + its validation metrics
 - On a fresh start (`docker compose down -v`) there is no model yet: `/health` and `/predict` answer 503 until
   `python -m training.track` registers a champion; the API copies then load it by themselves.
 - The model is **not** inside the image. At start the API downloads `skysat-satisfaction@champion` from MLflow and
-  checks the alias every 10 s; a new champion is swapped in while requests keep being served.
+  checks the alias every 10 s; a new champion is swapped in while requests keep being served. It must first answer a
+  made-up passenger: if this image's code cannot run it, the old model stays (with no old model, `/health` answers 503).
   If MLflow is down, the API keeps serving the model it already has.
 - Preprocessing comes from the same `training/train.py` that trained the model (no training/serving skew).
 
@@ -231,7 +232,7 @@ The map of all the pieces is in [docs/architecture.md](docs/architecture.md). Th
 
 | Loop | Workflow | Runs on | When | What |
 |---|---|---|---|---|
-| **CI** | `ci.yml` → `test`, `image` | GitHub's servers | every push / pull request | pytest on **fake data** (incl. training all 8 model types), compose check, API image build |
+| **CI** | `ci.yml` → `test`, `image` | GitHub's servers | every push / pull request | pytest on **fake data** (incl. training every model type), compose check, API image build |
 | **CT** | `ct.yml` → `train` | GitHub's servers | `make add-ct`, the *Run workflow* button, new training code on `main` | download the dataset, train, register, promote the best: all in the **shared MLflow** |
 | **CD** | `ci.yml` → `deploy` | a team PC (self-hosted runner), optional | push to `main`, after CI | push image to `ghcr.io/<repo>-api`, pull it on the PC, `docker compose up -d`, smoke test |
 
@@ -246,7 +247,7 @@ No team PC has to be on. GitHub's run queue is the job queue and its machines ar
 make add-ct ARGS="--model random_forest"        # ask GitHub to train one model (mlp, logistic_regression, random_forest,
                                                 # gradient_boosting[_tuned], lightgbm, xgboost, extra_trees, decision_tree, knn)
 make add-ct ARGS="--model mlp --rating-one-hot --epochs 30 --name mlp-30-epochs"
-make add-ct ARGS=--all                          # the 8 standard candidates
+make add-ct ARGS=--all                          # the 9 standard candidates
 make list-ct                                    # recent CT runs: queued / in progress / success / failure
 make ct-local ARGS="--model mlp --epochs 5"     # the same training on this computer (needs `make data`)
 make smoke                                      # what CD checks after a deploy: /health + /predict via Nginx
@@ -288,7 +289,7 @@ original dataset (83,123 train / 20,781 validation rows):
 - `make ct-local ARGS="--model logistic_regression --rating-one-hot"` reproduces 0.9807 exactly (fixed seeds).
 - Before comparing, CT re-scores the champion on the same validation rows (`Champion (version 5) on the same rows:
   roc_auc 0.9955`). Known limitation: those rows are the original, pre-storm passengers, so after a drift
-  retraining (step 7) a weekly CT round can still replace the storm-adapted model with one that is better on
+  retraining (step 7) a later CT round can still replace the storm-adapted model with one that is better on
   normal passengers. Check `GET /model` after a CT round if you just retrained for drift.
 
 ### One-time setup
@@ -328,9 +329,9 @@ trains with another branch's code.
 
 ## Step 9 – Demo scenario and documentation
 
-The 3-minute demo (a recorded video, after the slides) has three parts: the 5 CT models and the champion the
+The 3-minute demo (a recorded video, after the slides) has three parts: the CT candidates and the champion the
 quality gate picked (DagsHub), a new Kaggle submission and its score, and the drift story: **the model degrades,
-the system notices, retrains itself and recovers.** The drift part runs in a Docker project of its own with the
+the system notices, one command retrains it, and it recovers.** The drift part runs in a Docker project of its own with the
 DagsHub settings switched off on the command line, so it never touches the shared MLflow or your normal stack. Full guide: [demo/README.md](demo/README.md).
 
 ```bash
@@ -354,12 +355,13 @@ files have other columns (no "Inflight service", True/False target) and must sta
 runs on GitHub and never touches the API's model registry.
 
 ```bash
-make submission                       # 5-fold CV + artifacts/kaggle/submission.csv (~1 min), logged to MLflow `skysat-kaggle`
+make submission                       # 5-fold CV + artifacts/kaggle/submission.csv, logged to MLflow `skysat-kaggle`
+                                      # slow and loud: RealMLP alone takes ~5 min per fold on 22 CPU cores
 make submit MSG="hgb, 127 leaves"     # upload it (needs a Kaggle token in ~/.kaggle/access_token: Kaggle → Settings → API)
 make kaggle-scores                    # the team's submissions and their public leaderboard scores
 ```
 
-[training/competition.py](training/competition.py): scikit-learn gradient boosting, 5-fold stratified
+[training/competition.py](training/competition.py): LightGBM + XGBoost + RealMLP, 5-fold stratified
 cross-validation on the 699,635 competition train rows; the submission averages the 5 fold models' predictions.
 Settings chosen by CV ROC AUC (all runs in the file's docstring):
 
@@ -367,7 +369,10 @@ Settings chosen by CV ROC AUC (all runs in the file's docstring):
 |---|---|
 | scikit-learn defaults | 0.95767 ± 0.00063 |
 | + the original dataset as extra training rows (allowed external data) | 0.95727 (worse in all 5 folds) |
-| learning rate 0.05, up to 1000 rounds, 127 leaves (**default**) | **0.95853 ± 0.00053** |
+| scikit-learn: learning rate 0.05, up to 1000 rounds, 127 leaves | 0.95853 ± 0.00053 |
+| LightGBM + XGBoost + RealMLP, inputs from the original dataset and in-fold target encoding (**default**) | **0.96113 ± 0.00054** |
+
+Latest submission (the competition closed on 2026-10-31): public 0.96091, private 0.96151.
 
 - Same settings → byte-identical submission (sha256 printed and logged), so a leaderboard score can always be traced
   back to its MLflow run.

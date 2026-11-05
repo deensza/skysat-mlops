@@ -4,7 +4,7 @@ Recorded as a video beforehand (waiting moments cut) and narrated live, after th
 
 1. **Model selection** – CT trained the 9 standard candidates; the quality gate picked the champion (DagsHub).
 2. **Kaggle** – the same approach on the competition data: 5-fold CV, a new submission, the leaderboard score.
-3. **Drift** – the model degrades, the system notices, retrains itself and recovers.
+3. **Drift** – the model degrades, the system notices, one command retrains it, and it recovers.
 
 Everything runs with `make`.
 
@@ -22,6 +22,8 @@ alias dmake='make MLFLOW_TRACKING_URI= MLFLOW_TRACKING_USERNAME= MLFLOW_TRACKING
 - `COMPOSE_PROJECT_NAME`: your normal prediction log and local MLflow are untouched, no `make d-wipe` needed.
 - `dmake`: empty MLflow settings on the command line override `.env`, so everything uses the local MLflow.
   `.env` itself is not changed.
+- No k6 load test on this stack before the drift part: its random passengers make the drift check flag almost
+  every feature, with no storm at all.
 - Part 2 uses plain `make` on purpose: the Kaggle run belongs in the team's MLflow (experiment `skysat-kaggle`)
   and never touches the champion.
 
@@ -41,7 +43,7 @@ token. Open DagsHub (Models, Experiments) and Grafana at http://localhost:3000 (
 | # | Command / screen | What the audience sees |
 |---|---|---|
 | 1 | DagsHub → Models → `skysat-satisfaction` | the CT candidates, their ROC AUC, the `champion` alias on the best (v45, the ensemble, 0.9960) |
-| 2 | `make submission` | competition track: 5-fold CV ROC AUC per fold → `artifacts/kaggle/submission.csv` (~75 s) |
+| 2 | `make submission` | competition track: 5-fold CV ROC AUC per fold → `artifacts/kaggle/submission.csv` (long: RealMLP alone takes ~5 min per fold on 22 CPU cores, so film it beforehand) |
 | 3 | `make submit MSG="..."` then `make kaggle-scores` | the submission is accepted; its public leaderboard score |
 | 4 | `dmake smoke` | one passenger → *satisfied*, probability, model version, which API copy answered |
 | 5 | `dmake simulate MODE=drift` | winter storm (delays, worse ground service): accuracy drops in Grafana |
@@ -50,7 +52,7 @@ token. Open DagsHub (Models, Experiments) and Grafana at http://localhost:3000 (
 | 8 | `dmake simulate MODE=drift SEED=2` | new storm passengers, new model: accuracy recovers, Grafana shows version 2 |
 
 - The Kaggle model is **not** one of the CT models: the competition files have other columns, so the competition
-  track ([training/competition.py](../training/competition.py)) trains its own gradient boosting model. Same idea
+  track ([training/competition.py](../training/competition.py)) trains its own LightGBM + XGBoost + RealMLP average. Same idea
   (choose by validation score), separate pipeline.
 - The retrained storm model from part 3 is not sent to Kaggle either: it is fitted to simulated storm traffic and
   lives only in the demo's local MLflow.
@@ -75,7 +77,7 @@ unset COMPOSE_PROJECT_NAME; unalias dmake     # or just close this terminal
 - Drift check: PSI 0.44–1.32 on the 9 storm features, ≤ 0.004 on the other 13.
 - Quality gate on the same recent holdout: champion ROC AUC 0.9557, challenger 0.9825 → promoted.
 - Kaggle: CV ROC AUC 0.95853 ± 0.00053 (same file as the team's earlier submission, sha256 d95f7bcaa8c8;
-  public score 0.95789).
-- Timings: preparation ~70 s, `make submission` ~75 s, each `simulate` ~18 s, `retrain` ~28 s, the APIs switch
+  public score 0.95789). Later submission with the current default models: CV 0.96113, public 0.96091, private 0.96151.
+- Timings: preparation ~70 s, `make submission` ~75 s (with the models of that day), each `simulate` ~18 s, `retrain` ~28 s, the APIs switch
   to the new champion in ≤ 10 s. Identical numbers in two runs. Waiting moments are cut from the video.
 - The shared DagsHub registry was checked afterwards: unchanged.
