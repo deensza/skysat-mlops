@@ -339,7 +339,8 @@ make retrain ARGS=--check-only           # new: drift check; without ARGS: retra
 | Winter storm, before retraining | 1 | 91.75% |
 | Winter storm, after retraining (`SEED=2`) | 2 | 94.75% |
 
-`make retrain` uses the MLflow from `.env`: with the DagsHub lines set, a promotion changes the **team's** champion.
+`make retrain` refuses to run against the shared MLflow, because a promotion there changes the **team's** champion and
+what the server serves. The demo uses `dmake`; `make retrain SHARED=yes` overrides it on purpose.
 
 ## Kaggle competition track
 

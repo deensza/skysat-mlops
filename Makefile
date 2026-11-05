@@ -126,5 +126,8 @@ SEED ?= 0
 simulate: ## steps 6-7: send passengers to the API on :8080: make simulate MODE=drift N=2000 SEED=2
 	$(PY) -m simulator.simulate generate --mode $(MODE) --n $(N) --seed $(SEED) --url http://localhost:8080/predict
 
-retrain: ## step 7: drift check, retrain, promote if better (uses MLFLOW_* from .env!); ARGS=--check-only to only measure
+retrain: ## step 7: drift check, retrain, promote if better; ARGS=--check-only to only measure; refuses the shared MLflow
+	@case "$(MLFLOW_TRACKING_URI) $(ARGS) $(SHARED)" in *dagshub*--check-only*|*dagshub*yes) ;; *dagshub*) \
+		echo "Refused: this would replace the team's champion, which the server is serving."; \
+		echo "For the storm demo use dmake (demo/README.md). On purpose: make retrain SHARED=yes"; exit 1;; esac
 	$(PY) -m training.retrain $(ARGS)
