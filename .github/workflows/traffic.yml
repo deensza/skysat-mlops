@@ -1,0 +1,67 @@
+# Simulated passengers for the team's server, every hour, so the lifecycle runs while every team PC is off.
+# 1. downloads the ORIGINAL Kaggle dataset (as ct.yml does) and prepares it: the simulator draws passengers from
+#    data/processed/live.csv, which no model is trained on
+# 2. sends them to the server through its gateway (HTTPS + login), each followed by its real answer (/feedback)
+# 3. --mode auto: the weather calendar in simulator/simulate.py decides normal or storm (storm 06:00-18:00 UTC
+#    every second day). The hourly drift check (drift.yml) notices, retrains and promotes by itself.
+# The data only lives on the temporary GitHub machine; nothing is printed or uploaded except to the server.
+#
+# By hand (for the video): `make storm`, or Actions → Traffic → Run workflow, mode drift.
+# Setup (repository owner, once): secrets SKYSAT_SERVER (the server's address, no https://) and SKYSAT_LOGIN
+# (user:password of a gateway login made for GitHub, docs/server.md).
+name: Traffic
+
+on:
+  schedule:
+    - cron: "5 * * * *"  # every hour at :05 (GitHub may start it a few minutes late)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "auto = the weather calendar; normal; drift = winter storm"
+        type: choice
+        options: [auto, normal, drift]
+        default: auto
+      n:
+        description: "Passengers to send"
+        default: "500"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: traffic
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SKYSAT_SERVER: ${{ secrets.SKYSAT_SERVER }}
+      SKYSAT_LOGIN: ${{ secrets.SKYSAT_LOGIN }}  # read by simulator/simulate.py
+      MODE: ${{ inputs.mode || 'auto' }}  # read from env, never pasted into the script (no injection)
+      N: ${{ inputs.n || '500' }}
+    steps:
+      - name: Check the server settings exist
+        run: |
+          for name in SKYSAT_SERVER SKYSAT_LOGIN; do
+            test -n "${!name}" || { echo "Missing secret $name: see docs/server.md (Traffic and drift check)"; exit 1; }
+          done
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt kaggle==2.2.4
+
+      - name: Download the dataset
+        run: kaggle datasets download teejmahal20/airline-passenger-satisfaction -p data --unzip
+
+      - name: Prepare the data (step 2)
+        run: python -m training.prepare_data
+
+      - name: Send passengers to the server
+        run: python -m simulator.simulate generate --mode "$MODE" --n "$N" --seed "$GITHUB_RUN_NUMBER" --url "https://$SKYSAT_SERVER/predict"

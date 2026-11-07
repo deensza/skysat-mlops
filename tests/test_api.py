@@ -54,5 +54,12 @@ def test_model_that_answers_goes_live(new_champion, monkeypatch):
     assert list(seen[0].columns) == [schema.ID_COLUMN, *schema.FEATURES]  # same columns as a real request
 
 
+def test_recent_predictions_need_the_prediction_log(monkeypatch):
+    monkeypatch.setattr(main, "db", None)
+    with pytest.raises(main.HTTPException) as err:
+        main.recent_predictions(limit=10, model_version="2")
+    assert err.value.status_code == 503
+
+
 def test_test_passenger_is_a_valid_request():
     main.Passenger(**main.TEST_PASSENGER.iloc[0].to_dict())

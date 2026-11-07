@@ -27,7 +27,7 @@ KAGGLE := $(if $(wildcard .venv/bin/kaggle),.venv/bin/kaggle,kaggle)
 -include .env
 export MLFLOW_TRACKING_URI MLFLOW_TRACKING_USERNAME MLFLOW_TRACKING_PASSWORD
 
-.PHONY: help install install-train data data-card train compare graph add-ct list-ct ct-local submission submit kaggle-scores smoke d-up d-build d-down d-ps d-logs d-loadtest d-wipe test compose-check ci
+.PHONY: help install install-train data data-card train compare graph add-ct list-ct ct-local storm drift-check list-loop submission submit kaggle-scores smoke d-up d-build d-down d-ps d-logs d-loadtest d-wipe test compose-check ci
 
 help:
 	@awk -F ':.*## ' '/^[a-z-]+:.*## /{printf "%-16s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -67,6 +67,19 @@ list-ct: ## step 8: recent CT runs on GitHub
 
 ct-local: ## step 8: the same training on this computer (needs make data): make ct-local ARGS="--model mlp"
 	$(PY) -m training.ct $(ARGS)
+
+# The automatic loop on the server (docs/server.md): hourly traffic (traffic.yml) + hourly drift check (drift.yml)
+storm: ## step 8: GitHub sends N storm passengers to the server now (default 1000): make storm N=1000
+	gh workflow run traffic.yml -f mode=drift -f n=$(if $(filter command line,$(origin N)),$(N),1000)
+	@echo "Queued on GitHub. Then: make drift-check (or wait for the hourly one)   Follow: make list-loop"
+
+drift-check: ## step 8: GitHub checks the server's traffic for drift now, and retrains if it finds some
+	gh workflow run drift.yml
+	@echo "Queued on GitHub. Follow it: make list-loop   The PSI table is on the run's summary page"
+
+list-loop: ## step 8: recent traffic and drift-check runs on GitHub
+	gh run list --workflow traffic.yml --limit 5
+	gh run list --workflow drift.yml --limit 5
 
 # Kaggle competition track (training/competition.py). The competition data stays on this PC: never on GitHub.
 COMPETITION := playground-series-s6e10

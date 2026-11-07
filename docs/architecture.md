@@ -119,10 +119,12 @@ sequenceDiagram
 3. The copy writes the prediction to the `predictions` table.
 4. Later the real answer arrives on `POST /feedback` and fills in `actual`.
 5. Grafana reads the table: accuracy, ROC AUC, latency, requests per copy, model version over time.
-6. [training/retrain.py](../training/retrain.py) compares the latest 2,000 predictions with the training data
-   (**PSI** per feature). PSI ≥ 0.2 on any feature = drift → retrain the champion's model type on old + recent
-   data, score both on the same recent holdout, promote only if better. You start this with `make retrain`:
-   nothing runs it on its own.
+6. [training/retrain.py](../training/retrain.py) compares the latest predictions **of the champion** with its
+   **drift reference** (**PSI** per feature): the traffic it was last checked on, or its training data at first.
+   PSI ≥ 0.2 on any feature = drift → retrain the champion's model type on old + recent data, score both on the
+   same recent holdout, promote only if better. On the server this runs by itself every hour on GitHub
+   ([drift.yml](../.github/workflows/drift.yml), reading the log through `GET /predictions/recent`), fed by hourly
+   simulated traffic ([traffic.yml](../.github/workflows/traffic.yml)). On a PC you start it with `make retrain`.
 
 ## 6. CI, CD and CT
 
@@ -236,8 +238,12 @@ see the model version change if it becomes champion.
 - **The registry is public to read.** Anyone can read the runs and download the model files on DagsHub; anonymous
   writes are refused (checked: 403). No dataset rows are logged there: runs hold metrics, plots, small summary tables
   and models, and the data card holds aggregates and hashes.
-- **Retraining is started by hand** and needs the prediction log, so it cannot run on GitHub like CT. With the DagsHub
-  settings in `.env`, its model goes to the shared registry, so the storm demo runs on a PC with its own local MLflow
-  ([demo/README.md](../demo/README.md)). Retraining from the server's log is not set up.
+- **The loop on the server runs on simulated traffic.** Passengers and their real answers come from the original
+  dataset (`live.csv`), every hour from GitHub, with a winter storm on a fixed calendar. A real airline would get
+  answers later and only from some passengers. GitHub may start a scheduled run late, and stops scheduled runs in a
+  repository with no activity for 60 days.
+- **A drift retraining lands in the shared registry.** On the server that is the point (the server serves it); on a
+  PC with the DagsHub settings in `.env` it would replace the team's champion, so the PC storm demo keeps its own
+  local MLflow ([demo/README.md](../demo/README.md)).
 - **The k6 load test confuses the drift check.** Its random passengers look nothing like the training data and go
   into the same prediction log. Do not run it before a drift check on that log.

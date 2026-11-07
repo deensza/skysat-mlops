@@ -9,7 +9,7 @@ CT on GitHub, models and the champion in DagsHub.
 | Machine | Azure `Standard_B2ats_v2` (2 vCPU, 1 GB RAM + 2 GB swap), Ubuntu 24.04, Austria East |
 | Runs | Caddy (HTTPS), Nginx (the gateway), 1 API copy, PostgreSQL, Grafana |
 | Does not run | local MLflow (the API loads the champion from DagsHub), the k6 load test |
-| Holds no data | no dataset file is ever copied here; the simulator runs on a laptop and sends passengers over HTTPS |
+| Holds no data | no dataset file is ever copied here; the simulator runs on GitHub (every hour) or a laptop and sends passengers over HTTPS |
 | Addresses | `https://<server>/docs` (API), `https://<server>/grafana/d/skysat` (dashboard). The name is not in this public repo on purpose |
 
 ## The gateway: the only way in
@@ -20,7 +20,7 @@ internet -> Azure firewall (only 80, 443) -> Caddy (HTTPS) -> Nginx (rate limit,
 
 | Protection | How | Checked from outside |
 |---|---|---|
-| Only 2 accounts | HTTP Basic login in Nginx, `tutor` and `team`, 128-bit random passwords. The browser asks once; Swagger and Grafana then just work | No login or a wrong one: 401 on every path |
+| Only 2 accounts | HTTP Basic login in Nginx, `tutor` and `team`, 128-bit random passwords (a third, `github`, only for [the automatic loop](#the-automatic-loop)). The browser asks once; Swagger and Grafana then just work | No login or a wrong one: 401 on every path |
 | Encryption | Let's Encrypt certificate, renewed by Caddy; port 80 only redirects | HTTP answers 308 to HTTPS |
 | Password guessing and flooding | 20 requests/s per address (burst 100), checked **before** the login; addresses a client makes up are ignored | 429 under load, the tutor still gets in right after |
 | Oversized requests | 16 kB body limit | 40 kB: 413 |
@@ -36,7 +36,8 @@ server's `.env`. To lock someone out, delete their line in `gateway-users`.
 - **Hang or stopped container:** [monitoring/watchdog.sh](../monitoring/watchdog.sh), from cron every 5 minutes. It
   starts stopped containers at once and restarts the API after 3 failed health checks.
 - **Disk:** container logs are capped at 20 MB each.
-- **Dashboard:** opens on the last 30 days, so a visitor sees data even if no traffic was sent today. Before showing it:
+- **Dashboard:** opens on the last 30 days, so a visitor sees data even if no traffic was sent today. Once
+  [the automatic loop](#the-automatic-loop) is on, GitHub sends passengers every hour; without it, before showing it:
   `make simulate-server N=2000` (about 15 minutes, from a PC with `data/processed/live.csv`).
 
 | Failure, tested for real on 2026-11-05 | Back after |
@@ -45,6 +46,44 @@ server's `.env`. To lock someone out, delete their line in `gateway-users`.
 | Nginx stopped | next watchdog run (at most 5 min) |
 | API process killed | 100 s |
 | API hung | 67 s after the third failed check (about 15 min in all) |
+
+## The automatic loop
+
+Two hourly GitHub workflows use the server like a real airline would (README step 8, *The automatic loop on the
+server*): [traffic.yml](../.github/workflows/traffic.yml) sends 500 simulated passengers with their real answers,
+[drift.yml](../.github/workflows/drift.yml) reads the champion's latest predictions back through
+`GET /predictions/recent`, and retrains on GitHub when they drifted. The new champion reaches this server the usual
+way: the API checks DagsHub every `MODEL_RELOAD_SECONDS` (60 s here). Nothing trains on this machine.
+
+`GET /predictions/recent` sits behind the same login as Grafana, which can already show the same table. The rows
+go only to GitHub's temporary machine over HTTPS; the run's page shows PSI numbers, never rows.
+
+**Switching it on**, once, in this order:
+
+1. `osm` merged into `main`: scheduled workflows only run from `main`, and CI builds the API image with the new
+   endpoint there.
+2. The new image on the server (about 2 minutes without the API):
+
+   ```bash
+   az vm run-command invoke -g skysat-server -n skysat-server --command-id RunShellScript --scripts 'cd /opt/skysat && git pull -q && docker compose pull api && docker compose up -d --no-build' --query "value[0].message" -o tsv
+   ```
+
+3. A gateway login only for GitHub, so the tutor's and the team's passwords never leave this PC and the robot can
+   be locked out alone. The password is made and kept on the PC, and only its hash goes to the server:
+
+   ```bash
+   (umask 077; openssl rand -hex 16 > ~/.config/skysat/login-github)
+   ```
+   ```bash
+   az vm run-command invoke -g skysat-server -n skysat-server --command-id RunShellScript --scripts "echo 'github:$(openssl passwd -apr1 -in ~/.config/skysat/login-github)' >> /opt/skysat/gateway-users && cd /opt/skysat && docker compose exec -T nginx nginx -s reload" --query "value[0].message" -o tsv
+   ```
+
+4. The repository owner adds the secrets `SKYSAT_SERVER` (the address) and `SKYSAT_LOGIN` (`github:` + the
+   password from step 3), sent to them privately, never in an issue or a comment: the repository is public.
+5. First runs by hand: `make storm N=500`, then `make drift-check`, and read both runs' logs.
+
+**Switching it off** (keeps the server as it is): `gh workflow disable traffic.yml` and `gh workflow disable drift.yml`.
+To lock GitHub out of the server too, delete the `github` line in `gateway-users`.
 
 ## Cost and switching it off
 
@@ -76,7 +115,7 @@ On the VM: 2 GB of swap, Docker, a clone of this repo in `/opt/skysat`, the watc
 user, and these two files, which are never in git:
 
 ```
-/opt/skysat/gateway-users    the 2 logins: tutor:<hash>, team:<hash> (openssl passwd -apr1)
+/opt/skysat/gateway-users    the logins: tutor:<hash>, team:<hash>, and github:<hash> for the loop (openssl passwd -apr1)
 /opt/skysat/.env (mode 600)
   MLFLOW_TRACKING_URI, MLFLOW_TRACKING_USERNAME, MLFLOW_TRACKING_PASSWORD   the team's DagsHub
   POSTGRES_PASSWORD, GRAFANA_ADMIN_PASSWORD, GRAFANA_DB_PASSWORD            random, made for this server

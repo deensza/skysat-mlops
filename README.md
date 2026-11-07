@@ -228,16 +228,17 @@ Measured end to end with `docker compose up` (3 API copies), 2,000 passengers pe
 
 ## Step 8 – CI/CD and continuous training (CT)
 
-The map of all the pieces is in [docs/architecture.md](docs/architecture.md). Three automated loops:
+The map of all the pieces is in [docs/architecture.md](docs/architecture.md). Four automated loops:
 
 | Loop | Workflow | Runs on | When | What |
 |---|---|---|---|---|
 | **CI** | `ci.yml` → `test`, `image` | GitHub's servers | every push / pull request | pytest on **fake data** (incl. training every model type), compose check, API image build |
 | **CT** | `ct.yml` → `train` | GitHub's servers | `make add-ct`, the *Run workflow* button, new training code on `main` | download the dataset, train, register, promote the best: all in the **shared MLflow** |
+| **Drift** | `traffic.yml` → `send`, `drift.yml` → `check` | GitHub's servers, against [the team's server](docs/server.md) | every hour; `make storm`, `make drift-check` | simulated passengers to the server; drift check on its log; retrain, gate, promote when it drifted |
 | **CD** | `ci.yml` → `deploy` | [the team's server](docs/server.md) (self-hosted runner), once switched on | push to `main`, after CI | push image to `ghcr.io/<repo>-api`, pull it on the server, `docker compose up -d`, smoke test |
 
-Drift retraining (step 7, `python -m training.retrain`) stays a command you run where the stack is running,
-because it needs that machine's prediction log; with the shared MLflow set in `.env` its model lands there too.
+On a PC, drift retraining (step 7, `make retrain`) is a command you run next to that PC's prediction log. On the
+server nobody runs it: GitHub does, every hour ([the automatic loop](#the-automatic-loop-on-the-server) below).
 
 ### CT on GitHub, results in one shared MLflow
 
@@ -288,9 +289,49 @@ original dataset (83,123 train / 20,781 validation rows):
   (≤ 0.0005), so "best" here is partly luck.
 - `make ct-local ARGS="--model logistic_regression --rating-one-hot"` reproduces 0.9807 exactly (fixed seeds).
 - Before comparing, CT re-scores the champion on the same validation rows (`Champion (version 5) on the same rows:
-  roc_auc 0.9955`). Known limitation: those rows are the original, pre-storm passengers, so after a drift
-  retraining (step 7) a later CT round can still replace the storm-adapted model with one that is better on
-  normal passengers. Check `GET /model` after a CT round if you just retrained for drift.
+  roc_auc 0.9955`). Those rows are the original, pre-storm passengers, so during a storm a CT round can still
+  replace the storm-adapted model with one that is better on normal passengers. On the server the loop below then
+  repairs it: the new champion's drift reference is its training data, so the next hourly check sees the storm again.
+
+### The automatic loop on the server
+
+The whole lifecycle runs with every team PC off: data arrives, the system notices it changed, retrains, checks and
+serves the better model.
+
+```
+traffic.yml (:05 every hour)  500 simulated passengers + their real answers -> the server (HTTPS + login)
+                              weather calendar: storm 06:00-18:00 UTC every second day (19 November is one)
+drift.yml   (:35 every hour)  GET /predictions/recent: the champion's latest 1,000 predictions
+                              PSI per feature vs the champion's drift reference
+                              drift -> retrain (original data + recent x 5), both scored on the same recent holdout,
+                              quality gate -> new champion in DagsHub -> the server switches within a minute
+```
+
+```bash
+make storm                   # GitHub sends 1,000 storm passengers now (for the video; N=... for another number)
+make drift-check             # GitHub checks now instead of at :35; the PSI table is on the run's summary page
+make list-loop               # recent traffic and drift-check runs
+```
+
+**Why each model keeps its own drift reference.** Every CT and retraining run logs `drift_reference.json`: per
+feature, its bins and the share of rows in each (no rows, so it may sit in the public registry). The check compares
+traffic with the reference of the newest fair comparison the champion went through. Comparing always with the
+original data would flag a storm forever, and retrain every hour, after the model has already adapted to it.
+
+**Measured locally (2026-11-07)**, the same code against a throw-away stack (`--source http://localhost:8080`,
+window 1,000), MLP champion:
+
+| Phase | Check | Result |
+|---|---|---|
+| 600 normal passengers | PSI vs training data: max below 0.2 | no drift |
+| 1,000 storm passengers | 9 storm features flagged (PSI 0.38–1.26), the other 13 not | retrained: 0.9874 vs champion 0.9771 on the same 300 → **version 3** champion; the API switched |
+| 800 more storm passengers | vs version 3's reference (the storm traffic) | no drift: no hourly retraining while the storm lasts |
+| 1,000 normal passengers | 9 features flagged: the storm ended | retrained: 0.9918 vs **0.9928** → version 3 kept (it handles both); its reference moved |
+| 500 more normal passengers | vs that newest check | no drift |
+
+A weak logistic-regression champion showed the other path: its storm challenger reached 0.922, below the 0.95 gate,
+so nothing was registered, the reference stayed and the run failed. A red run means "the data changed and no good
+enough model came out": a person should look. The next hour tries again with newer passengers.
 
 ### One-time setup
 
@@ -315,6 +356,8 @@ original dataset (83,123 train / 20,781 validation rows):
 | Variable | `MLFLOW_TRACKING_URI` | `https://dagshub.com/<owner>/<repo>.mlflow` |
 | Variable | `MLFLOW_TRACKING_USERNAME` | the DagsHub user whose token is below |
 | Secret | `MLFLOW_TRACKING_PASSWORD` | that DagsHub token |
+| Secret | `SKYSAT_SERVER` | the server's address, without `https://` (traffic.yml, drift.yml) |
+| Secret | `SKYSAT_LOGIN` | `github:<password>`: a gateway login only for GitHub ([docs/server.md](docs/server.md#the-automatic-loop)) |
 
 Secrets never appear in logs, and runs started by strangers' pull requests never receive them. GitHub only lets you
 start a workflow by hand once its file is on `main`, so merge first; after that `make add-ct CT_REF=<branch>`

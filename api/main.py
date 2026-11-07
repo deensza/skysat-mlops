@@ -4,6 +4,7 @@
     POST /feedback  the real answer for an earlier prediction (step 6)
     GET  /health    200 once a model is loaded and has answered a test passenger (used by Docker and Nginx)
     GET  /model     which registered model version is serving, and its validation metrics
+    GET  /predictions/recent  the latest logged predictions with their real answers (read by the drift check)
 
 The model comes from the MLflow registry: `skysat-satisfaction@champion`. A background thread
 checks the alias every RELOAD_SECONDS; when it points to a new version, the new model is
@@ -29,7 +30,7 @@ from typing import Literal
 import mlflow
 import pandas as pd
 import torch
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from mlflow import MlflowClient
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
@@ -183,6 +184,23 @@ def feedback(item: Feedback):
     if updated == 0:
         raise HTTPException(status_code=404, detail="Unknown prediction_id")
     return {"prediction_id": str(item.prediction_id), "recorded": True}
+
+
+@app.get("/predictions/recent")
+def recent_predictions(limit: int = Query(2000, ge=1, le=5000), model_version: str | None = None):
+    """The latest predictions (newest first): the 22 inputs and the real answer (null until /feedback).
+    Read by the drift check on GitHub (training/retrain.py --source), which has no other way into the database.
+    `model_version`: only the predictions that version made. Behind the gateway's login on the server, like Grafana,
+    which shows the same table."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Prediction logging is off (no DATABASE_URL)")
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT features, actual FROM predictions WHERE %(version)s::text IS NULL OR model_version = %(version)s"
+            " ORDER BY created_at DESC LIMIT %(limit)s",
+            {"version": model_version, "limit": limit},
+        ).fetchall()
+    return {"model_version": model_version, "rows": [{"features": f, "actual": a} for f, a in rows]}
 
 
 @app.get("/health")
