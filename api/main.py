@@ -2,8 +2,9 @@
 
     POST /predict   one passenger (id + 22 features) -> satisfied yes/no and the probability
     POST /feedback  the real answer for an earlier prediction (step 6)
-    GET  /health    200 once a model is loaded (used by Docker and Nginx)
+    GET  /health    200 once a model is loaded and has answered a test passenger (used by Docker and Nginx)
     GET  /model     which registered model version is serving, and its validation metrics
+    GET  /predictions/recent  the latest logged predictions with their real answers (read by the drift check)
 
 The model comes from the MLflow registry: `skysat-satisfaction@champion`. A background thread
 checks the alias every RELOAD_SECONDS; when it points to a new version, the new model is
@@ -29,7 +30,7 @@ from typing import Literal
 import mlflow
 import pandas as pd
 import torch
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from mlflow import MlflowClient
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
@@ -57,6 +58,14 @@ for col in schema.RATING_FEATURES:
     fields[col] = (int, Field(ge=schema.RATING_MIN, le=schema.RATING_MAX))
 Passenger = create_model("Passenger", __config__=ConfigDict(extra="forbid"), **fields)
 
+# Made up. A new model must answer this passenger before it may serve: a registered champion can be
+# one that this image's code cannot run (it happened: /health said ok while every /predict was a 500).
+TEST_PASSENGER = pd.DataFrame([{
+    schema.ID_COLUMN: 0,
+    **{col: values[0] for col, values in schema.CATEGORICAL_VALUES.items()},
+    **dict.fromkeys(schema.NUMERIC_FEATURES + schema.RATING_FEATURES, 0),
+}])
+
 
 class Feedback(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -78,6 +87,7 @@ class ServingModel:
         with tempfile.TemporaryDirectory() as tmp:
             folder = mlflow.artifacts.download_artifacts(artifact_uri=version.source, dst_path=tmp)
             bundle = load_bundle(model_file(folder))
+        predict_proba(bundle, TEST_PASSENGER)  # raises if this code cannot run it: the old model stays
         before = self.current[0] if self.current else "none"
         self.current = (version.version, version.run_id, bundle, datetime.now(timezone.utc).isoformat())
         log.info("Serving %s version %s (was %s)", MODEL_NAME, version.version, before)
@@ -86,7 +96,7 @@ class ServingModel:
         while True:
             try:
                 self.refresh()
-            except Exception as err:  # MLflow down or no champion yet: keep the old model, retry
+            except Exception as err:  # MLflow down, no champion yet or a model we cannot run: keep the old one, retry
                 log.warning("Model refresh failed: %s", err)
             time.sleep(RELOAD_SECONDS)
 
@@ -176,6 +186,23 @@ def feedback(item: Feedback):
     return {"prediction_id": str(item.prediction_id), "recorded": True}
 
 
+@app.get("/predictions/recent")
+def recent_predictions(limit: int = Query(2000, ge=1, le=5000), model_version: str | None = None):
+    """The latest predictions (newest first): the 22 inputs and the real answer (null until /feedback).
+    Read by the drift check on GitHub (training/retrain.py --source), which has no other way into the database.
+    `model_version`: only the predictions that version made. Behind the gateway's login on the server, like Grafana,
+    which shows the same table."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Prediction logging is off (no DATABASE_URL)")
+    with db.connection() as conn:
+        rows = conn.execute(
+            "SELECT features, actual FROM predictions WHERE %(version)s::text IS NULL OR model_version = %(version)s"
+            " ORDER BY created_at DESC LIMIT %(limit)s",
+            {"version": model_version, "limit": limit},
+        ).fetchall()
+    return {"model_version": model_version, "rows": [{"features": f, "actual": a} for f, a in rows]}
+
+
 @app.get("/health")
 def health():
     version, *_ = require_model()
@@ -189,7 +216,7 @@ def model_info():
         "name": MODEL_NAME,
         "alias": ALIAS,
         "version": version,
-        "model_type": bundle["meta"].get("params", {}).get("model", "mlp"),  # step 8: CT picks among 5 types
+        "model_type": bundle["meta"].get("params", {}).get("model", "mlp"),  # step 8: CT trains many types
         "run_id": run_id,
         "loaded_at": loaded_at,
         "validation_metrics": bundle["meta"]["metrics"],

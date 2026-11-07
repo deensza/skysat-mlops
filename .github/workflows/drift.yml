@@ -1,0 +1,62 @@
+# Drift check on the server's traffic, every hour; retrains on GitHub when it finds drift (steps 7-8).
+# 1. reads the latest predictions the champion made on the server, with their real answers
+#    (GET /predictions/recent through the gateway: HTTPS + login)
+# 2. PSI per feature against the champion's drift reference (training/retrain.py explains which one)
+# 3. drift -> retrains on the original data + the recent passengers, scores both models on the same recent holdout,
+#    and the quality gate decides; a new champion lands in the shared MLflow (DagsHub) and the server switches
+#    to it by itself within a minute. No drift -> a green run that changes nothing.
+# The passengers only live on the temporary GitHub machine; the run's summary page shows the PSI numbers, no rows.
+#
+# By hand: Actions → Drift check → Run workflow, or `make drift-check`.
+# Setup (repository owner, once): the MLflow settings of ct.yml + secrets SKYSAT_SERVER and SKYSAT_LOGIN (traffic.yml).
+name: Drift check
+
+on:
+  schedule:
+    - cron: "35 * * * *"  # every hour at :35, after the traffic of :05 has arrived
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drift  # never two retrainings at once
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}
+      MLFLOW_TRACKING_USERNAME: ${{ vars.MLFLOW_TRACKING_USERNAME }}
+      MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+      SKYSAT_SERVER: ${{ secrets.SKYSAT_SERVER }}
+      SKYSAT_LOGIN: ${{ secrets.SKYSAT_LOGIN }}  # read by training/retrain.py
+    steps:
+      - name: Check the team settings exist
+        run: |
+          for name in MLFLOW_TRACKING_URI MLFLOW_TRACKING_USERNAME MLFLOW_TRACKING_PASSWORD SKYSAT_SERVER SKYSAT_LOGIN; do
+            test -n "${!name}" || { echo "Missing $name: see README step 8 and docs/server.md"; exit 1; }
+          done
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies (CPU-only PyTorch)
+        run: |
+          pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt kaggle==2.2.4
+
+      - name: Download the dataset
+        run: kaggle datasets download teejmahal20/airline-passenger-satisfaction -p data --unzip
+
+      - name: Prepare the data (step 2)
+        run: python -m training.prepare_data
+
+      # 500 passengers an hour (traffic.yml): 1,000 = the last ~2 hours the champion served
+      - name: Drift check, retrain if needed
+        run: python -m training.retrain --source "https://$SKYSAT_SERVER" --window 1000 --min-rows 500 --min-labelled 500

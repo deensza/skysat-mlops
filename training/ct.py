@@ -26,6 +26,7 @@ import mlflow
 from mlflow import MlflowClient
 
 from skysat import schema
+from skysat.monitoring import REFERENCE_FILE, profile
 from training.data_card import ORIGINAL_URL, data_tags
 from training.insight import log_insights, model_settings, run_params
 from training.track import EXPERIMENT, ROC_AUC_THRESHOLD, champion_auc_on, git_commit, load_data, register
@@ -87,6 +88,7 @@ def train_and_register(client: MlflowClient, train_df, val_df, name: str, overri
                                                      targets=schema.TARGET), context=context)
         mlflow.log_params(run_params(params))  # only the settings this model type uses
         mlflow.log_params({"train_rows": len(train_df), "validation_rows": len(val_df)})
+        mlflow.log_dict(profile(train_df), REFERENCE_FILE)  # what the drift check compares traffic with (no rows)
         path, metrics = run_training(train_df, val_df, params, Path(tmp))
         mlflow.log_metrics(metrics)
         mlflow.log_artifact(path, artifact_path="model")

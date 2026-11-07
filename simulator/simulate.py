@@ -6,6 +6,8 @@ writes them to a CSV file or sends them to the prediction API one by one.
 Modes:
     normal  passengers as they are
     drift   passengers after a winter storm (see simulator/drift.py)
+    auto    the weather calendar decides (scheduled_mode): what the hourly traffic on GitHub uses
+            (.github/workflows/traffic.yml), so the server sees storms come and go without anyone at a PC
 
 Examples (run from the project root):
     python -m simulator.simulate generate --mode normal --n 2000 --out data/sim_normal.csv
@@ -15,10 +17,13 @@ Examples (run from the project root):
 """
 
 import argparse
+import base64
 import json
+import os
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 
 import pandas as pd
 
@@ -35,7 +40,22 @@ def load_live() -> pd.DataFrame:
     return pd.read_csv(LIVE_FILE)
 
 
+# The weather calendar: a storm from 06:00 to 18:00 UTC on every second day (odd day numbers since year 1;
+# 19 November 2026, the demo day, is one).
+# 12 storm hours are long enough for the hourly drift check to notice, retrain and settle; the storm then ends,
+# normal traffic counts as drift against the storm, and the model adapts back.
+STORM_HOURS = range(6, 18)
+
+
+def scheduled_mode(now: datetime) -> str:
+    """'drift' while the calendar says storm, else 'normal'."""
+    return "drift" if now.toordinal() % 2 == 1 and now.hour in STORM_HOURS else "normal"
+
+
 def make_batch(mode: str, n: int, seed: int, share: float) -> pd.DataFrame:
+    if mode == "auto":
+        mode = scheduled_mode(datetime.now(timezone.utc))
+        print(f"Weather calendar: {'storm' if mode == 'drift' else 'normal'} ({datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC)")
     live = load_live()
     batch = live.sample(n=min(n, len(live)), random_state=seed, replace=False).reset_index(drop=True)
     if mode == "drift":
@@ -54,7 +74,11 @@ def to_request(row: pd.Series) -> dict:
 
 def post_json(url: str, body: dict) -> dict:
     data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    headers = {"Content-Type": "application/json"}
+    login = os.environ.get("SKYSAT_LOGIN")  # user:password for the server's gateway (make simulate-server)
+    if login:
+        headers["Authorization"] = "Basic " + base64.b64encode(login.encode()).decode()
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=10) as resp:
         return json.load(resp)
 
@@ -101,7 +125,7 @@ def cmd_generate(args):
     else:
         out = args.out or f"data/sim_{args.mode}.csv"
         batch.to_csv(out, index=False)
-        print(f"Wrote {len(batch)} {args.mode} passengers to {out}")
+        print(f"Wrote {len(batch)} passengers to {out}")
 
 
 def cmd_compare(args):
@@ -131,7 +155,7 @@ def main():
     common.add_argument("--share", type=share_value, default=0.6, help="drift: share of passengers hit (default 0.6)")
 
     gen = sub.add_parser("generate", parents=[common], help="write passengers to a CSV or send them to the API")
-    gen.add_argument("--mode", choices=["normal", "drift"], default="normal")
+    gen.add_argument("--mode", choices=["normal", "drift", "auto"], default="normal")
     gen.add_argument("--out", help="output CSV (default data/sim_<mode>.csv)")
     gen.add_argument("--url", help="send each passenger as a POST request to this URL instead of writing a file")
     gen.add_argument("--rate", type=float, default=0, help="requests per second when sending (0 = as fast as possible)")

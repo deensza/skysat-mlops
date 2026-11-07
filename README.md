@@ -141,7 +141,8 @@ curl localhost:8080/model          # serving version + its validation metrics
 - On a fresh start (`docker compose down -v`) there is no model yet: `/health` and `/predict` answer 503 until
   `python -m training.track` registers a champion; the API copies then load it by themselves.
 - The model is **not** inside the image. At start the API downloads `skysat-satisfaction@champion` from MLflow and
-  checks the alias every 10 s; a new champion is swapped in while requests keep being served.
+  checks the alias every 10 s; a new champion is swapped in while requests keep being served. It must first answer a
+  made-up passenger: if this image's code cannot run it, the old model stays (with no old model, `/health` answers 503).
   If MLflow is down, the API keeps serving the model it already has.
 - Preprocessing comes from the same `training/train.py` that trained the model (no training/serving skew).
 
@@ -227,16 +228,17 @@ Measured end to end with `docker compose up` (3 API copies), 2,000 passengers pe
 
 ## Step 8 – CI/CD and continuous training (CT)
 
-The map of all the pieces is in [docs/architecture.md](docs/architecture.md). Three automated loops:
+The map of all the pieces is in [docs/architecture.md](docs/architecture.md). Four automated loops:
 
 | Loop | Workflow | Runs on | When | What |
 |---|---|---|---|---|
-| **CI** | `ci.yml` → `test`, `image` | GitHub's servers | every push / pull request | pytest on **fake data** (incl. training all 8 model types), compose check, API image build |
+| **CI** | `ci.yml` → `test`, `image` | GitHub's servers | every push / pull request | pytest on **fake data** (incl. training every model type), compose check, API image build |
 | **CT** | `ct.yml` → `train` | GitHub's servers | `make add-ct`, the *Run workflow* button, new training code on `main` | download the dataset, train, register, promote the best: all in the **shared MLflow** |
-| **CD** | `ci.yml` → `deploy` | a team PC (self-hosted runner), optional | push to `main`, after CI | push image to `ghcr.io/<repo>-api`, pull it on the PC, `docker compose up -d`, smoke test |
+| **Drift** | `traffic.yml` → `send`, `drift.yml` → `check` | GitHub's servers, against [the team's server](docs/server.md) | every hour; `make storm`, `make drift-check` | simulated passengers to the server; drift check on its log; retrain, gate, promote when it drifted |
+| **CD** | `ci.yml` → `deploy` | [the team's server](docs/server.md) (self-hosted runner), once switched on | push to `main`, after CI | push image to `ghcr.io/<repo>-api`, pull it on the server, `docker compose up -d`, smoke test |
 
-Drift retraining (step 7, `python -m training.retrain`) stays a command you run where the stack is running,
-because it needs that machine's prediction log; with the shared MLflow set in `.env` its model lands there too.
+On a PC, drift retraining (step 7, `make retrain`) is a command you run next to that PC's prediction log. On the
+server nobody runs it: GitHub does, every hour ([the automatic loop](#the-automatic-loop-on-the-server) below).
 
 ### CT on GitHub, results in one shared MLflow
 
@@ -246,7 +248,7 @@ No team PC has to be on. GitHub's run queue is the job queue and its machines ar
 make add-ct ARGS="--model random_forest"        # ask GitHub to train one model (mlp, logistic_regression, random_forest,
                                                 # gradient_boosting[_tuned], lightgbm, xgboost, extra_trees, decision_tree, knn)
 make add-ct ARGS="--model mlp --rating-one-hot --epochs 30 --name mlp-30-epochs"
-make add-ct ARGS=--all                          # the 8 standard candidates
+make add-ct ARGS=--all                          # the 9 standard candidates
 make list-ct                                    # recent CT runs: queued / in progress / success / failure
 make ct-local ARGS="--model mlp --epochs 5"     # the same training on this computer (needs `make data`)
 make smoke                                      # what CD checks after a deploy: /health + /predict via Nginx
@@ -287,18 +289,60 @@ original dataset (83,123 train / 20,781 validation rows):
   (≤ 0.0005), so "best" here is partly luck.
 - `make ct-local ARGS="--model logistic_regression --rating-one-hot"` reproduces 0.9807 exactly (fixed seeds).
 - Before comparing, CT re-scores the champion on the same validation rows (`Champion (version 5) on the same rows:
-  roc_auc 0.9955`). Known limitation: those rows are the original, pre-storm passengers, so after a drift
-  retraining (step 7) a weekly CT round can still replace the storm-adapted model with one that is better on
-  normal passengers. Check `GET /model` after a CT round if you just retrained for drift.
+  roc_auc 0.9955`). Those rows are the original, pre-storm passengers, so during a storm a CT round can still
+  replace the storm-adapted model with one that is better on normal passengers. On the server the loop below then
+  repairs it: the new champion's drift reference is its training data, so the next hourly check sees the storm again.
+
+### The automatic loop on the server
+
+The whole lifecycle runs with every team PC off: data arrives, the system notices it changed, retrains, checks and
+serves the better model.
+
+```
+traffic.yml (:05 every hour)  500 simulated passengers + their real answers -> the server (HTTPS + login)
+                              weather calendar: storm 06:00-18:00 UTC every second day (19 November is one)
+drift.yml   (:35 every hour)  GET /predictions/recent: the champion's latest 1,000 predictions
+                              PSI per feature vs the champion's drift reference
+                              drift -> retrain (original data + recent x 5), both scored on the same recent holdout,
+                              quality gate -> new champion in DagsHub -> the server switches within a minute
+```
+
+```bash
+make storm                   # GitHub sends 1,000 storm passengers now (for the video; N=... for another number)
+make drift-check             # GitHub checks now instead of at :35; the PSI table is on the run's summary page
+make list-loop               # recent traffic and drift-check runs
+```
+
+**Why each model keeps its own drift reference.** Every CT and retraining run logs `drift_reference.json`: per
+feature, its bins and the share of rows in each (no rows, so it may sit in the public registry). The check compares
+traffic with the reference of the newest fair comparison the champion went through. Comparing always with the
+original data would flag a storm forever, and retrain every hour, after the model has already adapted to it.
+
+**Measured locally (2026-11-07)**, the same code against a throw-away stack (`--source http://localhost:8080`,
+window 1,000), MLP champion:
+
+| Phase | Check | Result |
+|---|---|---|
+| 600 normal passengers | PSI vs training data: max below 0.2 | no drift |
+| 1,000 storm passengers | 9 storm features flagged (PSI 0.38–1.26), the other 13 not | retrained: 0.9874 vs champion 0.9771 on the same 300 → **version 3** champion; the API switched |
+| 800 more storm passengers | vs version 3's reference (the storm traffic) | no drift: no hourly retraining while the storm lasts |
+| 1,000 normal passengers | 9 features flagged: the storm ended | retrained: 0.9918 vs **0.9928** → version 3 kept (it handles both); its reference moved |
+| 500 more normal passengers | vs that newest check | no drift |
+
+A weak logistic-regression champion showed the other path: its storm challenger reached 0.922, below the 0.95 gate,
+so nothing was registered, the reference stayed and the run failed. A red run means "the data changed and no good
+enough model came out": a person should look. The next hour tries again with newer passengers.
 
 ### One-time setup
 
 **DagsHub (the shared MLflow).** Check DagsHub's pages as you go; its menus may have moved.
 
 1. Both team members create a free DagsHub account.
-2. One of you creates a **private** DagsHub repository (e.g. `skysat-mlops`) and adds the other as a collaborator.
-   Private matters: only collaborators can see the runs and models. The free plan's limits at the time of writing:
-   2 collaborators and 100 tracked runs in a private project (a 5-model round uses 5).
+2. One of you creates a DagsHub repository (e.g. `skysat-mlops`) and adds the other as a collaborator. Ours is
+   **public**: anyone can read the runs, metrics and model files, so the tutor can look without an account; only a
+   token with access can change anything. So never log dataset rows there (we log metrics, plots, small summary
+   tables, the data card and the models). A private repo has lower limits on the free plan: 2 collaborators and 100
+   tracked runs at the time of writing.
 3. Its MLflow address is `https://dagshub.com/<owner>/<repo>.mlflow`. Each of you creates a DagsHub token and puts
    the three `MLFLOW_TRACKING_*` lines from [.env.example](.env.example) into your own `.env`.
 4. **First check:** `make data` then `make ct-local ARGS="--model logistic_regression --rating-one-hot"`. It must end
@@ -312,25 +356,21 @@ original dataset (83,123 train / 20,781 validation rows):
 | Variable | `MLFLOW_TRACKING_URI` | `https://dagshub.com/<owner>/<repo>.mlflow` |
 | Variable | `MLFLOW_TRACKING_USERNAME` | the DagsHub user whose token is below |
 | Secret | `MLFLOW_TRACKING_PASSWORD` | that DagsHub token |
+| Secret | `SKYSAT_SERVER` | the server's address, without `https://` (traffic.yml, drift.yml) |
+| Secret | `SKYSAT_LOGIN` | `github:<password>`: a gateway login only for GitHub ([docs/server.md](docs/server.md#the-automatic-loop)) |
 
 Secrets never appear in logs, and runs started by strangers' pull requests never receive them. GitHub only lets you
 start a workflow by hand once its file is on `main`, so merge first; after that `make add-ct CT_REF=<branch>`
 trains with another branch's code.
 
-**Optional, CD to a PC (self-hosted runner).** Only for a PC that is on when you push to `main`.
-
-1. On this public repo, first set Settings → Actions → General → *Fork pull request workflows from outside
-   collaborators* → **Require approval for all external contributors**, and never approve runs from strangers:
-   otherwise a stranger's pull request could edit a workflow to run code on that PC.
-2. Settings → Actions → Runners → **New self-hosted runner** (Linux x64), label `skysat`, install it as a service
-   (`sudo ./svc.sh install && sudo ./svc.sh start`). The runner user needs Docker without sudo.
-3. Set the repository variable `DEPLOY_TO_RUNNER` to `true`. Without it the `deploy` job is skipped.
+**CD to the server (self-hosted runner).** The steps are in [docs/server.md](docs/server.md). Without the repository
+variable `DEPLOY_TO_RUNNER=true` the `deploy` job is skipped.
 
 ## Step 9 – Demo scenario and documentation
 
-The 3-minute demo (a recorded video, after the slides) has three parts: the 5 CT models and the champion the
+The 3-minute demo (a recorded video, after the slides) has three parts: the CT candidates and the champion the
 quality gate picked (DagsHub), a new Kaggle submission and its score, and the drift story: **the model degrades,
-the system notices, retrains itself and recovers.** The drift part runs in a Docker project of its own with the
+the system notices, one command retrains it, and it recovers.** The drift part runs in a Docker project of its own with the
 DagsHub settings switched off on the command line, so it never touches the shared MLflow or your normal stack. Full guide: [demo/README.md](demo/README.md).
 
 ```bash
@@ -344,7 +384,8 @@ make retrain ARGS=--check-only           # new: drift check; without ARGS: retra
 | Winter storm, before retraining | 1 | 91.75% |
 | Winter storm, after retraining (`SEED=2`) | 2 | 94.75% |
 
-`make retrain` uses the MLflow from `.env`: with the DagsHub lines set, a promotion changes the **team's** champion.
+`make retrain` refuses to run against the shared MLflow, because a promotion there changes the **team's** champion and
+what the server serves. The demo uses `dmake`; `make retrain SHARED=yes` overrides it on purpose.
 
 ## Kaggle competition track
 
@@ -354,12 +395,13 @@ files have other columns (no "Inflight service", True/False target) and must sta
 runs on GitHub and never touches the API's model registry.
 
 ```bash
-make submission                       # 5-fold CV + artifacts/kaggle/submission.csv (~1 min), logged to MLflow `skysat-kaggle`
+make submission                       # 5-fold CV + artifacts/kaggle/submission.csv, logged to MLflow `skysat-kaggle`
+                                      # slow and loud: RealMLP alone takes ~5 min per fold on 22 CPU cores
 make submit MSG="hgb, 127 leaves"     # upload it (needs a Kaggle token in ~/.kaggle/access_token: Kaggle → Settings → API)
 make kaggle-scores                    # the team's submissions and their public leaderboard scores
 ```
 
-[training/competition.py](training/competition.py): scikit-learn gradient boosting, 5-fold stratified
+[training/competition.py](training/competition.py): LightGBM + XGBoost + RealMLP, 5-fold stratified
 cross-validation on the 699,635 competition train rows; the submission averages the 5 fold models' predictions.
 Settings chosen by CV ROC AUC (all runs in the file's docstring):
 
@@ -367,7 +409,10 @@ Settings chosen by CV ROC AUC (all runs in the file's docstring):
 |---|---|
 | scikit-learn defaults | 0.95767 ± 0.00063 |
 | + the original dataset as extra training rows (allowed external data) | 0.95727 (worse in all 5 folds) |
-| learning rate 0.05, up to 1000 rounds, 127 leaves (**default**) | **0.95853 ± 0.00053** |
+| scikit-learn: learning rate 0.05, up to 1000 rounds, 127 leaves | 0.95853 ± 0.00053 |
+| LightGBM + XGBoost + RealMLP, inputs from the original dataset and in-fold target encoding (**default**) | **0.96113 ± 0.00054** |
+
+Latest submission (the competition closed on 2026-10-31): public 0.96091, private 0.96151.
 
 - Same settings → byte-identical submission (sha256 printed and logged), so a leaderboard score can always be traced
   back to its MLflow run.

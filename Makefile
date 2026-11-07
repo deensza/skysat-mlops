@@ -6,7 +6,7 @@
 #   make train          step 3a: train the model -> artifacts/model.pt
 #   make compare        compare the MLP with logistic regression and gradient boosting
 #   make graph          plot which features drive satisfaction -> artifacts/eda/*.png
-#   make add-ct ARGS=.. step 8: train on GitHub, e.g. ARGS="--model random_forest" or ARGS=--all (8 models)
+#   make add-ct ARGS=.. step 8: train on GitHub, e.g. ARGS="--model random_forest" or ARGS=--all (9 models)
 #   make list-ct        step 8: recent CT runs on GitHub (results: the shared MLflow)
 #   make ct-local ARGS= step 8: the same training on this computer
 #   make smoke          step 8: smoke-test the running stack (what CD runs after a deploy)
@@ -27,14 +27,14 @@ KAGGLE := $(if $(wildcard .venv/bin/kaggle),.venv/bin/kaggle,kaggle)
 -include .env
 export MLFLOW_TRACKING_URI MLFLOW_TRACKING_USERNAME MLFLOW_TRACKING_PASSWORD
 
-.PHONY: help install install-train data data-card train compare graph add-ct list-ct ct-local submission submit kaggle-scores smoke d-up d-build d-down d-ps d-logs d-loadtest d-wipe test compose-check ci
+.PHONY: help install install-train data data-card train compare graph add-ct list-ct ct-local storm drift-check list-loop submission submit kaggle-scores smoke d-up d-build d-down d-ps d-logs d-loadtest d-wipe test compose-check ci
 
 help:
 	@awk -F ':.*## ' '/^[a-z-]+:.*## /{printf "%-16s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 install: ## create .venv and install the pinned packages (what CI installs)
 	uv venv --python $(PYTHON) .venv
-	uv pip install --python .venv/bin/python -r requirements.txt pytest==8.3.3
+	uv pip install --python .venv/bin/python -r requirements.txt -r api/requirements.txt pytest==8.3.3
 
 install-train: ## add PyTorch, the Kaggle CLI and psycopg to .venv (training, retraining, competition)
 	uv pip install --python .venv/bin/python -r requirements-train.txt
@@ -58,7 +58,7 @@ graph: ## plot feature weights and relationships from the competition zip -> art
 # CT_REF: the branch whose code trains (the workflow must exist there): make add-ct CT_REF=ml ARGS=--all
 CT_REF ?= main
 
-add-ct: ## step 8: train on GitHub: make add-ct ARGS="--model random_forest"  (ARGS=--all: the 8 candidates)
+add-ct: ## step 8: train on GitHub: make add-ct ARGS="--model random_forest"  (ARGS=--all: the 9 candidates)
 	gh workflow run ct.yml --ref $(CT_REF) -f args="$(ARGS)"
 	@echo "Queued on GitHub. Follow it: make list-ct   Results: the shared MLflow (runs, versions, champion)"
 
@@ -67,6 +67,19 @@ list-ct: ## step 8: recent CT runs on GitHub
 
 ct-local: ## step 8: the same training on this computer (needs make data): make ct-local ARGS="--model mlp"
 	$(PY) -m training.ct $(ARGS)
+
+# The automatic loop on the server (docs/server.md): hourly traffic (traffic.yml) + hourly drift check (drift.yml)
+storm: ## step 8: GitHub sends N storm passengers to the server now (default 1000): make storm N=1000
+	gh workflow run traffic.yml -f mode=drift -f n=$(if $(filter command line,$(origin N)),$(N),1000)
+	@echo "Queued on GitHub. Then: make drift-check (or wait for the hourly one)   Follow: make list-loop"
+
+drift-check: ## step 8: GitHub checks the server's traffic for drift now, and retrains if it finds some
+	gh workflow run drift.yml
+	@echo "Queued on GitHub. Follow it: make list-loop   The PSI table is on the run's summary page"
+
+list-loop: ## step 8: recent traffic and drift-check runs on GitHub
+	gh run list --workflow traffic.yml --limit 5
+	gh run list --workflow drift.yml --limit 5
 
 # Kaggle competition track (training/competition.py). The competition data stays on this PC: never on GitHub.
 COMPETITION := playground-series-s6e10
@@ -118,7 +131,7 @@ compose-check: ## validate docker-compose.yml (all profiles)
 ci: test compose-check ## same two checks as the GitHub Actions workflow
 
 # Steps 6-7 from make (also the step 9 demo, see demo/README.md): send traffic to the running stack, then retrain
-.PHONY: simulate retrain
+.PHONY: simulate simulate-server retrain
 MODE ?= normal
 N ?= 2000
 SEED ?= 0
@@ -126,5 +139,11 @@ SEED ?= 0
 simulate: ## steps 6-7: send passengers to the API on :8080: make simulate MODE=drift N=2000 SEED=2
 	$(PY) -m simulator.simulate generate --mode $(MODE) --n $(N) --seed $(SEED) --url http://localhost:8080/predict
 
-retrain: ## step 7: drift check, retrain, promote if better (uses MLFLOW_* from .env!); ARGS=--check-only to only measure
+simulate-server: ## send passengers to the team's server through its gateway (docs/server.md): make simulate-server N=2000
+	SKYSAT_LOGIN=team:$$(cat ~/.config/skysat/login-team) $(PY) -m simulator.simulate generate --mode $(MODE) --n $(N) --seed $(SEED) --url https://$$(cat ~/.config/skysat/server-address)/predict
+
+retrain: ## step 7: drift check, retrain, promote if better; ARGS=--check-only to only measure; refuses the shared MLflow
+	@case "$(MLFLOW_TRACKING_URI) $(ARGS) $(SHARED)" in *dagshub*--check-only*|*dagshub*yes) ;; *dagshub*) \
+		echo "Refused: this would replace the team's champion, which the server is serving."; \
+		echo "For the storm demo use dmake (demo/README.md). On purpose: make retrain SHARED=yes"; exit 1;; esac
 	$(PY) -m training.retrain $(ARGS)

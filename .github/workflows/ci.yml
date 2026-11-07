@@ -2,9 +2,9 @@
 #   test    every push and pull request, on GitHub's servers, on a small fake dataset (no Kaggle files);
 #           the tests also train all 5 CT model types on it.
 #   image   builds the API Docker image; on main it is pushed to ghcr.io (code only, no data, no model).
-#   deploy  only on main, and only once the team has a self-hosted runner (label `skysat`) and has set the
-#           repository variable DEPLOY_TO_RUNNER=true: pulls the new image on that PC, restarts the stack and
-#           smoke-tests it. Never runs for pull requests (see README, step 8).
+#   deploy  only on main, and only once the team's server has a self-hosted runner (label `skysat`) and the
+#           repository variable DEPLOY_TO_RUNNER=true is set: pulls the new image on the server, restarts the
+#           stack and smoke-tests it. Never runs for pull requests (see docs/server.md).
 # The model itself is not part of the image: the API serves whatever MLflow's `champion` alias points
 # to, and continuous training (.github/workflows/ct.yml) moves that alias.
 name: CI/CD
@@ -33,13 +33,16 @@ jobs:
       - name: Install dependencies (CPU-only PyTorch)
         run: |
           pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt pytest==8.3.3
+          pip install -r requirements.txt -r api/requirements.txt pytest==8.3.3
 
       - name: Run tests
         run: python -m pytest -v
 
       - name: Check docker-compose.yml
         run: docker compose --profile loadtest config --quiet
+
+      - name: Check the server's compose files
+        run: SITE_ADDRESS=x GRAFANA_ADMIN_PASSWORD=x GRAFANA_DB_PASSWORD=x docker compose -f docker-compose.yml -f docker-compose.server.yml config --quiet
 
   image:
     needs: test
@@ -70,9 +73,11 @@ jobs:
     permissions:
       contents: read
       packages: read
-    concurrency: team-pc
+    concurrency: server
     env:
-      COMPOSE_PROJECT_NAME: skysat-mlops  # the same stack as `docker compose up` in the repo
+      COMPOSE_PROJECT_NAME: skysat-mlops  # the stack already running on the server, so its data is kept
+      COMPOSE_FILE: docker-compose.yml:docker-compose.server.yml
+      COMPOSE_ENV_FILES: /opt/skysat/.env  # the server's own passwords (docs/server.md); never in git
       MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}  # the APIs load the champion from the shared MLflow
       MLFLOW_TRACKING_USERNAME: ${{ vars.MLFLOW_TRACKING_USERNAME }}
       MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
@@ -89,5 +94,5 @@ jobs:
       - name: Restart the stack with it
         run: docker compose up -d --no-build
 
-      - name: Smoke test through Nginx
-        run: bash .github/scripts/smoke-test.sh http://localhost:8080
+      - name: Smoke test through Nginx  # up to 6 min: a restart is slow on the server's 1 GB of RAM
+        run: bash .github/scripts/smoke-test.sh http://localhost:8080 120  # the gateway's port for the server itself

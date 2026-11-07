@@ -9,7 +9,8 @@ An airline wants to know, right after a flight, whether a passenger is **satisfi
 Kaggle passenger survey, keep every model in **MLflow**, serve the best one (the **champion**) through a
 **prediction API**, log every prediction to **PostgreSQL**, watch the results in **Grafana**, detect when the
 passengers start to look different (**drift**), and train new models (**CT**). **CI/CD** tests and deploys the
-code. Training runs on GitHub's servers; the rest runs in Docker on whichever team PC is in use.
+code. Training runs on GitHub's servers; the rest runs in Docker on the team's [server](server.md), and on a team
+PC during development and for the drift demo.
 
 ## 2. The big picture
 
@@ -18,11 +19,11 @@ flowchart LR
     subgraph GH["GitHub (always on)"]
         ct["CT workflow<br/>download data, train,<br/>register, promote"]
     end
-    subgraph DH["DagsHub (always on, private)"]
+    subgraph DH["DagsHub (always on, public to read)"]
         mlflow[("shared MLflow<br/>runs + model registry<br/>alias: champion")]
     end
-    subgraph PC["A team PC (docker compose)"]
-        api["API x3<br/>FastAPI"]
+    subgraph PC["The team's server, or a team PC (docker compose)"]
+        api["API copies<br/>FastAPI"]
         nginx["Nginx :8080<br/>load balancer"]
         pg[("PostgreSQL :5432<br/>predictions")]
         grafana["Grafana :3000<br/>dashboard"]
@@ -53,7 +54,8 @@ Three ideas hold it together:
   trains it on its own machines, even when every team PC is off.
 
 Without the shared MLflow settings in `.env`, everything falls back to a local MLflow at http://localhost:5050
-(the `mlflow` service), which is handy offline but only you can see.
+(the `mlflow` service), which is handy offline but only you can see. With them set, that container still starts
+but nothing uses it: what it shows is old local data, not what the API serves. Look at DagsHub instead.
 
 ## 3. The services
 
@@ -98,13 +100,14 @@ sequenceDiagram
    80/20 into `processed/train.csv` + `validation.csv`; `data/test.csv` becomes `live.csv` (traffic the models
    never saw).
 2. **Train** ([training/train.py](../training/train.py)): one function, `run_training(train, validation, params)`,
-   for every model type. `params["model"]` picks the type: `mlp` (PyTorch) or a scikit-learn model
-   (`logistic_regression`, `random_forest`, `gradient_boosting`). The same file holds the preprocessing that the
+   for every model type. `params["model"]` picks the type: `mlp` (PyTorch), a scikit-learn model,
+   LightGBM, XGBoost or the `ensemble` of three of them. The same file holds the preprocessing that the
    API uses, so training and serving cannot disagree.
 3. **Register** ([training/track.py](../training/track.py) `register()`): the **quality gate** — a model is only
    registered if validation ROC AUC ≥ 0.95, and only becomes `champion` if it beats the current one.
 4. **Serve** ([api/main.py](../api/main.py)): the API copies notice the new champion within
-   `MODEL_RELOAD_SECONDS` (10 s by default).
+   `MODEL_RELOAD_SECONDS` (10 s by default). A new model must answer a test passenger before it may serve; if this
+   image's code cannot run it, the old model stays (with no old model, `/health` answers 503).
    `GET /model` tells you which version and which `model_type` is serving.
 
 ## 5. Life of a prediction
@@ -116,9 +119,12 @@ sequenceDiagram
 3. The copy writes the prediction to the `predictions` table.
 4. Later the real answer arrives on `POST /feedback` and fills in `actual`.
 5. Grafana reads the table: accuracy, ROC AUC, latency, requests per copy, model version over time.
-6. [training/retrain.py](../training/retrain.py) compares the latest 2,000 predictions with the training data
-   (**PSI** per feature). PSI ≥ 0.2 on any feature = drift → retrain the champion's model type on old + recent
-   data, score both on the same recent holdout, promote only if better.
+6. [training/retrain.py](../training/retrain.py) compares the latest predictions **of the champion** with its
+   **drift reference** (**PSI** per feature): the traffic it was last checked on, or its training data at first.
+   PSI ≥ 0.2 on any feature = drift → retrain the champion's model type on old + recent data, score both on the
+   same recent holdout, promote only if better. On the server this runs by itself every hour on GitHub
+   ([drift.yml](../.github/workflows/drift.yml), reading the log through `GET /predictions/recent`), fed by hourly
+   simulated traffic ([traffic.yml](../.github/workflows/traffic.yml)). On a PC you start it with `make retrain`.
 
 ## 6. CI, CD and CT
 
@@ -141,8 +147,8 @@ flowchart LR
 
 | Loop | Question it answers | File |
 |---|---|---|
-| **CI** – continuous integration | "Does the code still work?" Tests on fake data, incl. training all 8 model types | [.github/workflows/ci.yml](../.github/workflows/ci.yml) `test`, `image` |
-| **CT** – continuous training | "Is the best possible model serving?" Trains what you ask for (or the 8 candidates) | [.github/workflows/ct.yml](../.github/workflows/ct.yml) |
+| **CI** – continuous integration | "Does the code still work?" Tests on fake data, incl. training every model type | [.github/workflows/ci.yml](../.github/workflows/ci.yml) `test`, `image` |
+| **CT** – continuous training | "Is the best possible model serving?" Trains what you ask for (or the 9 candidates) | [.github/workflows/ct.yml](../.github/workflows/ct.yml) |
 | **CD** – continuous deployment | "Is the newest code running?" Pushes the API image; a team PC with a runner pulls it | [ci.yml](../.github/workflows/ci.yml) `deploy` (optional) |
 
 **Where the data is:** the pipeline trains on the **original** Kaggle dataset
@@ -159,7 +165,7 @@ and you start the new code yourself with `docker compose up -d --build`.
 ```bash
 make add-ct ARGS="--model random_forest"        # GitHub trains one model
 make add-ct ARGS="--model mlp --rating-one-hot --epochs 30 --name mlp-30-epochs"
-make add-ct ARGS=--all                          # the 8 standard candidates
+make add-ct ARGS=--all                          # the 9 standard candidates
 make list-ct                                    # recent CT runs: queued / in progress / success / failure
 make ct-local ARGS="--model mlp --epochs 5"     # the same training on this computer (needs make data)
 ```
@@ -171,8 +177,8 @@ code produced which model.
 Your idea of a shared job queue is still the design, it is just hosted: GitHub's run queue is the queue and its
 machines are the workers, so there is nothing to start, stop or keep running.
 
-The 8 standard candidates: logistic regression (with one-hot ratings), random forest, gradient boosting
-(default and tuned), LightGBM, XGBoost, MLP, MLP with one-hot ratings. On request only (`--model`):
+The 9 standard candidates: logistic regression (with one-hot ratings), random forest, gradient boosting
+(default and tuned), LightGBM, XGBoost, MLP, MLP with one-hot ratings, and the ensemble. On request only (`--model`):
 extra trees, decision tree, k-nearest neighbours.
 
 ## 8. Where things live
@@ -212,4 +218,32 @@ tests/          pytest, fake data only
 | **job queue / worker** | producers put work in a list; a background process takes it out and does it |
 | **self-hosted runner** | GitHub's job runner installed on our own PC (only for the optional CD step) |
 | **profile** (Compose) | services that only start when you ask for them (`--profile loadtest`) |
-| **DagsHub** | a website that hosts a private MLflow for the team, so the models are not on anyone's PC |
+| **DagsHub** | a website that hosts the team's MLflow, so the models are not on anyone's PC. Anyone can read it; only the team can change it |
+
+## 11. Known limits
+
+The only link between training and serving is the champion in DagsHub: a CT run never shows up in Grafana; you only
+see the model version change if it becomes champion.
+
+| Part | Where it runs | Who sees it |
+|---|---|---|
+| CT, runs, model registry, champion | GitHub + DagsHub, always on | the whole team |
+| API, Nginx, PostgreSQL, Grafana | the [server](server.md), always on, behind a gateway | the 2 accounts with a login |
+| The same stack for development and the drift demo | Docker on a team PC, only while it is on | that PC only |
+
+- **The server is small.** 1 GB of RAM runs 1 API copy, so load balancing and scaling are only shown on a PC, and a
+  request sometimes stalls for 15–19 s while memory comes back from swap ([measured](server.md#measured-2026-11-05)).
+- **The server has one machine and one login method.** A real system would have several machines and real user
+  management; the [gateway](server.md#the-gateway-the-only-way-in) is HTTPS, a rate limit and 2 accounts.
+- **The registry is public to read.** Anyone can read the runs and download the model files on DagsHub; anonymous
+  writes are refused (checked: 403). No dataset rows are logged there: runs hold metrics, plots, small summary tables
+  and models, and the data card holds aggregates and hashes.
+- **The loop on the server runs on simulated traffic.** Passengers and their real answers come from the original
+  dataset (`live.csv`), every hour from GitHub, with a winter storm on a fixed calendar. A real airline would get
+  answers later and only from some passengers. GitHub may start a scheduled run late, and stops scheduled runs in a
+  repository with no activity for 60 days.
+- **A drift retraining lands in the shared registry.** On the server that is the point (the server serves it); on a
+  PC with the DagsHub settings in `.env` it would replace the team's champion, so the PC storm demo keeps its own
+  local MLflow ([demo/README.md](../demo/README.md)).
+- **The k6 load test confuses the drift check.** Its random passengers look nothing like the training data and go
+  into the same prediction log. Do not run it before a drift check on that log.
