@@ -227,3 +227,26 @@ def test_replay_picks_live_reviews_in_date_order(parts):
     body = request_body(batch.iloc[0])
     assert set(body) == {"airline", "cabin", "travel_type", "title", "review", "true_score", "true_recommended"}
     assert isinstance(body["true_score"], int) and body["true_recommended"] in ("yes", "no")
+
+
+def test_promote_moves_the_champion_alias(tmp_path, monkeypatch, capsys):
+    """llm.promote: the release step for a version trained with --no-promote (a throwaway sqlite registry)."""
+    mlflow = pytest.importorskip("mlflow")
+    from llm import promote
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", f"sqlite:///{tmp_path}/mlflow.db")
+    mlflow.set_tracking_uri(f"sqlite:///{tmp_path}/mlflow.db")
+    client = mlflow.MlflowClient()
+    client.create_registered_model(promote.MODEL_NAME)
+    for _ in range(2):
+        client.create_model_version(promote.MODEL_NAME, source=str(tmp_path))
+    client.set_registered_model_alias(promote.MODEL_NAME, promote.ALIAS, "1")
+
+    monkeypatch.setattr("sys.argv", ["promote", "2"])
+    promote.main()
+    assert str(client.get_model_version_by_alias(promote.MODEL_NAME, promote.ALIAS).version) == "2"
+    assert "version 1 -> version 2" in capsys.readouterr().out
+
+    monkeypatch.setattr("sys.argv", ["promote", "3"])  # not registered: refuse, alias unchanged
+    with pytest.raises(Exception):
+        promote.main()
+    assert str(client.get_model_version_by_alias(promote.MODEL_NAME, promote.ALIAS).version) == "2"

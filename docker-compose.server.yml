@@ -18,6 +18,8 @@ services:
   api:
     logging: *small-logs
     restart: unless-stopped
+    environment:
+      MODEL_RELOAD_SECONDS: 60  # a promotion (make llm-promote) reaches the server within a minute, e.g. live in the demo
     depends_on: !override
       postgres:
         condition: service_healthy

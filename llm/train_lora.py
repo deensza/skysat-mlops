@@ -202,6 +202,9 @@ def parse_args():
     p.add_argument("--base", default=BASE_MODEL)
     p.add_argument("--out", type=Path, default=DEFAULT_OUT, help="where the adapter is saved")
     p.add_argument("--no-mlflow", action="store_true", help="train and gate only: log and register nothing")
+    p.add_argument("--no-promote", action="store_true",
+                   help="register the new version if it passes the gate, but leave the champion alias where it is "
+                        "(promote it later: make llm-promote VERSION=N)")
     p.add_argument("--eval-only", action="store_true", help="no training: score an adapter on --split")
     p.add_argument("--adapter", default="champion", help="with --eval-only: 'champion' or a local adapter folder")
     return p.parse_args()
@@ -285,7 +288,7 @@ def main():
         mlflow.log_artifacts(str(args.out), "adapter")
 
         if not gate.passes(metrics):
-            print("Not registered: the gate failed (limits are in llm/gate.py, PROVISIONAL)")
+            print("Not registered: the gate failed (limits are in llm/gate.py)")
             return
         try:
             client.create_registered_model(MODEL_NAME)
@@ -294,7 +297,12 @@ def main():
         version = client.create_model_version(MODEL_NAME, source=f"{run.info.artifact_uri}/adapter",
                                               run_id=run.info.run_id)
         print(f"Registered {MODEL_NAME} version {version.version}")
-        if champion_score is None or metrics["combined"] > champion_score:
+        beats = champion_score is None or metrics["combined"] > champion_score
+        if args.no_promote:
+            print(f"{ALIAS} not changed (--no-promote); version {version.version} "
+                  f"{'beats' if beats else 'does not beat'} it on the same reviews. "
+                  f"Promote it with: make llm-promote VERSION={version.version}")
+        elif beats:
             client.set_registered_model_alias(MODEL_NAME, ALIAS, version.version)
             print(f"Version {version.version} is the new {ALIAS} (combined {metrics['combined']:.3f}, "
                   f"previous {'none' if champion_score is None else f'{champion_score:.3f}'})")

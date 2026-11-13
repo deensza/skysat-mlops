@@ -23,7 +23,7 @@ LLM_MLFLOW ?= sqlite:///artifacts/llm-runs/mlflow.db
 LLM_ENV := $(if $(filter yes,$(SHARED)),,env -u MLFLOW_TRACKING_USERNAME -u MLFLOW_TRACKING_PASSWORD MLFLOW_TRACKING_URI=$(LLM_MLFLOW))
 
 .PHONY: help install test compose-check ci smoke d-up d-build d-down d-ps d-logs d-loadtest d-wipe \
-	llm-install llm-train llm-eval llm-serve llm-up llm-replay llm-drift llm-cycle
+	llm-install llm-train llm-eval llm-promote llm-serve llm-up llm-replay llm-drift llm-cycle
 
 help:
 	@awk -F ':.*## ' '/^[a-z-]+:.*## /{printf "%-16s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -89,6 +89,10 @@ llm-train: ## LLM: LoRA-tune, gate, log, register: make llm-train LLM_SPLIT=live
 llm-eval: ## LLM: score the champion on LLM_SPLIT (and SCENARIO): make llm-eval LLM_SPLIT=live-2019 SCENARIO=harsh
 	@mkdir -p artifacts/llm-runs
 	$(LLM_ENV) $(LLM_PY) -m llm.train_lora --eval-only --split $(LLM_SPLIT) $(SCENARIO_ARG) $(ARGS)
+
+llm-promote: ## LLM: make a registered version the champion (the release step after --no-promote): make llm-promote VERSION=2 SHARED=yes
+	@test -n "$(VERSION)" || { echo "usage: make llm-promote VERSION=2 [SHARED=yes]"; exit 1; }
+	$(LLM_ENV) $(LLM_PY) -m llm.promote $(VERSION)
 
 # A local adapter (artifacts/llm/adapter, from make llm-train ARGS=--no-mlflow) is served when it exists, else the
 # MLflow champion. CPU only, like the server: CUDA_VISIBLE_DEVICES is emptied.

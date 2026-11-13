@@ -123,7 +123,7 @@ user, and these two files, which are never in git:
   MLFLOW_TRACKING_URI, MLFLOW_TRACKING_USERNAME, MLFLOW_TRACKING_PASSWORD   the team's DagsHub
   POSTGRES_PASSWORD, GRAFANA_ADMIN_PASSWORD, GRAFANA_DB_PASSWORD            random, made for this server
   SITE_ADDRESS=<name>.austriaeast.cloudapp.azure.com
-  MODEL_RELOAD_SECONDS=300                                                  this runs all day against DagsHub
+  (MODEL_RELOAD_SECONDS is 60 on the server, set in docker-compose.server.yml: a promotion goes live within a minute)
   API_IMAGE=ghcr.io/deensza/skysat-mlops-api:latest                         nothing is built on the server
   COMPOSE_FILE=docker-compose.yml:docker-compose.server.yml
   COMPOSE_PROJECT_NAME=skysat-mlops
