@@ -1,84 +1,54 @@
-# Step 9 – Demo (3 minutes)
+# Demo (3 minutes)
 
-Recorded as a video beforehand (waiting moments cut) and narrated live, after the slides. Three parts:
+Recorded as a video beforehand (waiting moments cut) and narrated live, after the slides. The story: **the model degrades,
+the system notices, one command retrains it, it recovers.**
 
-1. **Model selection** – CT trained the 9 standard candidates; the quality gate picked the champion (DagsHub).
-2. **Kaggle** – the same approach on the competition data: 5-fold CV, a new submission, the leaderboard score.
-3. **Drift** – the model degrades, the system notices, one command retrains it, and it recovers.
+## Keep the demo away from the team's registry
 
-Everything runs with `make`.
-
-## Keep the drift part away from the team's data
-
-Part 3 retrains and promotes a new champion. With the DagsHub lines in `.env`, `make` would do that in the
-**shared** MLflow and every API would switch to the demo's storm model. So, in the terminal used for the demo:
+The demo promotes a new champion. The `llm-*` training commands already use a local sqlite MLflow
+(`artifacts/llm-runs/mlflow.db`) unless you pass `SHARED=yes`: **never pass `SHARED=yes` in the demo**. For Docker use
+a separate project and no shared MLflow settings:
 
 ```bash
 make d-down                                   # stop your normal stack first (same ports)
-export COMPOSE_PROJECT_NAME=skysat-demo       # separate Docker project: own database and local MLflow
+export COMPOSE_PROJECT_NAME=skysat-demo       # own database, own local MLflow, own model cache
 alias dmake='make MLFLOW_TRACKING_URI= MLFLOW_TRACKING_USERNAME= MLFLOW_TRACKING_PASSWORD='
 ```
 
-- `COMPOSE_PROJECT_NAME`: your normal prediction log and local MLflow are untouched, no `make d-wipe` needed.
-- `dmake`: empty MLflow settings on the command line override `.env`, so everything uses the local MLflow.
-  `.env` itself is not changed.
-- No k6 load test on this stack before the drift part: its random passengers make the drift check flag almost
-  every feature, with no storm at all.
-- Part 2 uses plain `make` on purpose: the Kaggle run belongs in the team's MLflow (experiment `skysat-kaggle`)
-  and never touches the champion.
+The API in Docker reads the champion from the MLflow service of that project. To give it one, train into that MLflow:
+`MLFLOW_TRACKING_URI=http://localhost:5050` for the training commands (set `LLM_MLFLOW=http://localhost:5050`).
 
-## Before recording (~1 min)
+## Before recording
 
 ```bash
-dmake d-up                                    # the stack (3 API copies, Nginx, PostgreSQL, Grafana, MLflow)
-dmake ct-local ARGS="--model mlp"             # first champion in the local MLflow (~30 s)
-dmake simulate                                # 2,000 normal passengers -> Grafana shows the "healthy" baseline
+make llm-install                              # once; the data in data/reviews/AirlineReviews.csv
+dmake d-up                                    # API, MLflow, PostgreSQL, Nginx, Grafana (first start downloads the 3 GB base model)
+make llm-train LLM_MLFLOW=http://localhost:5050                     # v1 (~5 min on an RTX 4070): the champion
+dmake smoke                                   # one review through Nginx
+dmake llm-replay MONTHS=1 PER_MONTH=100       # normal live traffic: Grafana shows the healthy baseline
 ```
 
-Also needed: `data/playground-series-s6e10.zip` (Kaggle → competition → Data; never committed) and a Kaggle
-token. Open DagsHub (Models, Experiments) and Grafana at http://localhost:3000 (time range **Last 5 minutes**, refresh
-**5s**; the dashboard's default is 30 days and 1 minute, for the server).
+Open Grafana at http://localhost:3000 (time range **Last 1 hour**, refresh **5s**) and MLflow at http://localhost:5050.
 
 ## The demo
 
 | # | Command / screen | What the audience sees |
 |---|---|---|
-| 1 | DagsHub → Models → `skysat-satisfaction` | the CT candidates, their ROC AUC, the `champion` alias on the best (v45, the ensemble, 0.9960) |
-| 2 | `make submission` | competition track: 5-fold CV ROC AUC per fold → `artifacts/kaggle/submission.csv` (long: RealMLP alone takes ~5 min per fold on 22 CPU cores, so film it beforehand) |
-| 3 | `make submit MSG="..."` then `make kaggle-scores` | the submission is accepted; its public leaderboard score |
-| 4 | `dmake smoke` | one passenger → *satisfied*, probability, model version, which API copy answered |
-| 5 | `dmake simulate MODE=drift` | winter storm (delays, worse ground service): accuracy drops in Grafana |
-| 6 | `dmake retrain ARGS=--check-only` | PSI per feature: exactly the 9 features the storm changes are flagged |
-| 7 | `dmake retrain` | retrain, both models scored on the same holdout, the better one becomes champion |
-| 8 | `dmake simulate MODE=drift SEED=2` | new storm passengers, new model: accuracy recovers, Grafana shows version 2 |
+| 1 | MLflow → Models → `skysat-reviews` | v1 champion: MAE 0.91, recommended 94.5%, complaint 68% |
+| 2 | `dmake smoke` | one review → score, recommended, complaint, model version, latency |
+| 3 | `dmake llm-replay MONTHS=1 PER_MONTH=100` | normal 2019 traffic: live MAE 0.75-0.83 in Grafana (real drift does not hurt) |
+| 4 | `dmake llm-replay SCENARIO=harsh MONTHS=1 PER_MONTH=100` | the harsh survey: live MAE and recommended accuracy cross the red lines |
+| 5 | `dmake llm-drift` | markdown table, `DRIFT` on at least 50 labelled requests |
+| 6 | `make llm-train LLM_SPLIT=live-2019 SCENARIO=harsh LLM_MLFLOW=...` | v2 (MAE 0.41, recommended 95.5%) beats v1 (harsh 2019: MAE 1.18, 89.5%) and is promoted |
+| 7 | `dmake llm-replay SCENARIO=harsh FROM=2019-04 MONTHS=1 PER_MONTH=100` | the API loads v2 by itself (`MODEL_RELOAD_SECONDS`; set it to 10 in `.env` for the demo); Grafana: version 2, accuracy recovers |
 
-- The Kaggle model is **not** one of the CT models: the competition files have other columns, so the competition
-  track ([training/competition.py](../training/competition.py)) trains its own LightGBM + XGBoost + RealMLP average. Same idea
-  (choose by validation score), separate pipeline.
-- The retrained storm model from part 3 is not sent to Kaggle either: it is fitted to simulated storm traffic and
-  lives only in the demo's local MLflow.
-- `SEED=2` sends passengers the new model has not been trained on (the same seed would flatter it).
-- Every `make submit` uses one of the 10 daily Kaggle submissions.
+- Step 6 is long (training); film it beforehand and cut the wait. `make llm-cycle` does v1, the failing score and v2 in one go.
+- A different month in step 7 gives reviews v2 was not trained on.
+- Real timings and numbers: [docs/llm.md](../docs/llm.md). Re-measure on the demo machine and note the date here.
 
 ## Afterwards
 
 ```bash
-make d-wipe                                   # answer y: deletes ONLY the skysat-demo project (COMPOSE_PROJECT_NAME)
+make d-wipe                                   # answer y: deletes ONLY the skysat-demo project
 unset COMPOSE_PROJECT_NAME; unalias dmake     # or just close this terminal
 ```
-
-## Measured (rehearsal 2026-10-22, MacBook, Docker Desktop)
-
-| Phase | Serving version | Accuracy (real answers) |
-|---|---|---|
-| Normal traffic | 1 | 96.25% |
-| Storm, before retraining | 1 | 91.75% |
-| Storm, after retraining (`SEED=2`) | 2 | 94.75% |
-
-- Drift check: PSI 0.44–1.32 on the 9 storm features, ≤ 0.004 on the other 13.
-- Quality gate on the same recent holdout: champion ROC AUC 0.9557, challenger 0.9825 → promoted.
-- Kaggle: CV ROC AUC 0.95853 ± 0.00053 (same file as the team's earlier submission, sha256 d95f7bcaa8c8;
-  public score 0.95789). Later submission with the current default models: CV 0.96113, public 0.96091, private 0.96151.
-- Timings: preparation ~70 s, `make submission` ~75 s (with the models of that day), each `simulate` ~18 s, `retrain` ~28 s, the APIs switch
-  to the new champion in ≤ 10 s. Identical numbers in two runs. Waiting moments are cut from the video.
-- The shared DagsHub registry was checked afterwards: unchanged.

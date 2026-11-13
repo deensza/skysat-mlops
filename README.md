@@ -5,436 +5,81 @@ Topic: **MLOps – Build a simple ML model and demonstrate its complete lifecycl
 
 Team: Bermal Deniz Akkaya, Osman Şahin Güler
 
-SkySat predicts whether an airline passenger is satisfied and shows the full MLOps lifecycle around that model:
-data → training → experiment tracking & model registry (MLflow) → packaging (Docker) → serving (FastAPI) →
-scaling & load testing (Nginx, k6) → monitoring (PostgreSQL, Grafana) → drift detection → retraining → CI/CD (GitHub Actions).
+SkySat is a **complaint box** for airline reviews. A small LLM (Qwen2.5-1.5B-Instruct, LoRA-tuned) reads a real review
+and answers with the score out of 10, whether the reviewer would recommend the airline, and the main complaint.
+Around that one model the project shows the full MLOps lifecycle:
+data → LoRA training on a GPU → quality gate → experiment tracking & model registry (MLflow) → packaging (Docker) →
+serving (FastAPI, Nginx) → monitoring (PostgreSQL, Grafana) → drift detection → retraining → CI/CD (GitHub Actions).
 
-Dataset: [Airline Passenger Satisfaction](https://www.kaggle.com/datasets/teejmahal20/airline-passenger-satisfaction)
-(the original data behind Kaggle Playground Series S6E10, *Predicting Airline Satisfaction*).
+| | v1 (champion) | under the "harsh" survey, 2019 | v2 (retrained on harsh 2019) |
+|---|---|---|---|
+| Score MAE | 0.91 | 1.18 (fails the gate) | 0.41 |
+| Recommended accuracy | 94.5% | 89.5% | 95.5% |
+
+v1: LoRA r=16 on 2,000 reviews flown <= 2018, 5 min on an RTX 4070, adapter 17 MB; complaint accuracy 68%.
+Real 2019-2022 reviews do not hurt it (MAE 0.75-0.83), so the drift in the demo is simulated; v2 is promoted
+automatically. Details: [docs/llm.md](docs/llm.md).
 
 ## Data and licence
 
-- **Competition data:** [Playground Series – Season 6, Episode 10: Predicting Airline Satisfaction](https://www.kaggle.com/competitions/playground-series-s6e10),
-  sponsored by Google LLC and hosted by Kaggle. Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
-- **Original dataset:** linked above; see its Kaggle page for its own licence.
-- The competition rules forbid redistributing the data, so it is **never committed, copied into Docker images, or used in CI**.
-  Download it yourself into `data/` (see [data/README.md](data/README.md)); tests use small synthetic data instead.
-- This repository is public, which the rules allow: they forbid *private* sharing outside the team, not public sharing.
-  Code that is shared publicly must also be shared on the competition's Kaggle discussion forum or notebooks:
-  post a link to this repo in the competition's Discussion tab. The data and trained models are never in the repository.
-- Code: [MIT License](LICENSE) (an OSI-approved licence that allows commercial use, as the rules require for shared code).
+- **Data:** [Airline Reviews (128k)](https://www.kaggle.com/datasets/joelljungstrom/128k-airline-reviews) by joelljungstrom
+  on Kaggle, licence DbCL-1.0. The reviews were scraped from airlinequality.com by the dataset's author.
+- The dataset is **never committed, copied into Docker images, logged to MLflow or stored as text in PostgreSQL**.
+  Download it yourself into `data/reviews/` ([data/README.md](data/README.md)); the tests use made-up reviews.
+- Base model: Qwen2.5-1.5B-Instruct (Apache-2.0), downloaded at the first start, never committed.
+- Code: [MIT License](LICENSE).
 
 ## Project structure
 
 | Folder | Purpose |
 |---|---|
-| `data/` | Dataset files (downloaded, not committed) |
-| `docs/` | [Architecture](docs/architecture.md): how all the pieces fit together — start here |
-| `demo/` | [3-minute demo](demo/README.md): storm → drift → retraining → recovery, all with `make` |
-| `simulator/` | Sends passenger records to the API (normal and drift modes) |
-| `training/` | Training and retraining scripts, MLflow logging |
-| `api/` | FastAPI prediction service |
-| `monitoring/` | Grafana dashboards and database setup |
-| `loadtest/` | k6 load test scripts |
-| `nginx/` | Load balancer configuration |
-| `tests/` | Automated tests (pytest) |
-| `.github/workflows/` | CI/CD pipeline (GitHub Actions) |
+| `llm/` | Training (`train_lora.py`), quality gate (`gate.py`), data (`reviews.py`), API (`serve.py`), drift check (`drift_check.py`), Dockerfile |
+| `simulator/` | `replay.py` posts live reviews with their true labels; `scenarios.py` simulates drift |
+| `notebooks/` | Colab notebook for training on a free T4 GPU |
+| `monitoring/` | Grafana dashboard, database setup (`llm_scores`), watchdog |
+| `nginx/` | Gateway configuration (local and server) |
+| `loadtest/` | k6 test for `POST /score` |
+| `tests/` | Automated tests (pytest, no GPU) |
+| `docs/` | [LLM](docs/llm.md), [architecture](docs/architecture.md), [server](docs/server.md), [presentation](docs/presentation.md) |
+| `demo/` | [Demo runbook](demo/README.md) |
+| `.github/workflows/` | CI/CD, traffic replay, drift check |
 
 ## Setup
 
-The team uses Linux and macOS (Apple Silicon). You need Git, Docker (Docker Desktop on a Mac), `make` and
-[uv](https://docs.astral.sh/uv/):
-
-- macOS: `xcode-select --install` (gives git and make), then `brew install uv libomp` (libomp: OpenMP, needed by LightGBM)
-- Linux: git, make and uv from your package manager (or uv's install script from its website)
-- Windows: not tested; use WSL2
+You need Git, Docker, `make` and [uv](https://docs.astral.sh/uv/). Training needs an NVIDIA GPU (or Colab).
 
 ```bash
-make install          # .venv with Python 3.12 + the pinned packages (uv downloads Python 3.12 if needed)
-make install-train    # + PyTorch, the Kaggle CLI and psycopg (training, retraining, competition track)
-make test             # should end with "passed"
+make install        # .venv: pinned packages for the tests and the replay (no torch)
+make test           # should end with "passed"
+make llm-install    # .venv-llm: CUDA PyTorch, transformers, peft (GPU machine only, ~5 GB)
+kaggle datasets download joelljungstrom/128k-airline-reviews -p data/reviews --unzip
 ```
 
-`make` uses `.venv` by itself; `source .venv/bin/activate` only if you want to run `python` directly.
-On Linux without an NVIDIA GPU, PyPI's PyTorch brings ~2 GB of CUDA libraries; the comment at the top of
-[requirements-train.txt](requirements-train.txt) shows the smaller CPU-only install. On a Mac PyPI's build is the
-right one.
+`make help` lists every command.
 
-Then download the dataset as described in [data/README.md](data/README.md).
-
-Day to day, the Docker stack has shortcuts (`make help` lists everything):
+## Run the lifecycle
 
 ```bash
-make d-up        # start MLflow, PostgreSQL, 3 API copies, Nginx, Grafana in the background
-make d-ps        # what is running, and is it healthy
-make d-build     # after changing code: rebuild the images and restart what changed
-make d-logs      # follow the logs (one service: make d-logs SERVICE=api)
-make d-down      # stop everything; data is kept
-make d-wipe      # stop and delete the local data (asks first)
+make llm-cycle      # v1 on <= 2018 reviews, v1 on harsh 2019 (fails the gate), v2 retrained on harsh 2019 (promoted)
+make d-up           # the Docker stack: API, MLflow, PostgreSQL, Nginx, Grafana
+make smoke          # /health and one POST /score through Nginx (http://localhost:8080)
+make llm-replay SCENARIO=harsh MONTHS=1 PER_MONTH=100   # live reviews with true labels -> Grafana (http://localhost:3000)
+make llm-drift      # drift check on the last 24 h of the log
 ```
 
-## Step 2 – Data preparation and traffic simulator
+The `llm-*` training commands use a local sqlite MLflow unless `SHARED=yes`. Docker: `make d-ps`, `d-logs`, `d-build`,
+`d-down` (data kept), `d-wipe` (deletes local data, asks first).
 
-```bash
-# clean the data and split it: processed/train.csv, validation.csv, live.csv
-python -m training.prepare_data
+## Pipeline
 
-# see how the "winter storm" drift changes the passengers
-python -m simulator.simulate compare --n 5000
-
-# write passengers to a CSV (normal or drift mode)
-python -m simulator.simulate generate --mode normal --n 2000
-python -m simulator.simulate generate --mode drift  --n 2000
-
-# later (step 4+): send passengers to the API instead of a file
-python -m simulator.simulate generate --mode drift --n 500 --url http://localhost:8080/predict
-```
-
-- `data/train.csv` is split 80/20 (stratified) into **train** and **validation**.
-- `data/test.csv` becomes **live** traffic: the model never sees these passengers during training.
-- **Drift mode – winter storm:** 60% of passengers get an extra 30–180 min delay, and 7 ratings that depend on
-  the airport, the schedule and the online systems drop by 2 stars (never below 1; 0 = not rated stays 0).
-  The labels do not change, so a model trained before the storm becomes less accurate until it is retrained.
-
-## Step 3a – Training
-
-```bash
-make install         # once: .venv with the pinned packages (Python 3.12)
-make install-train   # once: adds PyTorch
-make data            # step 2: clean + split (needs data/train.csv and test.csv)
-make train           # trains on data/processed/train.csv, evaluates on validation.csv
-```
-
-Writes `artifacts/model.pt` (gitignored) and prints validation AUC, precision, recall, F1 and the majority-class baseline.
-`model.pt` is one file: network weights plus the preprocessing settings. The API will load it with `load_bundle()` and
-`predict_proba()` from [training/train.py](training/train.py), the same code that trained it.
-Step 3b (MLflow) calls `run_training()` and logs / registers the result. `make help` lists all shortcuts; `make ci` runs the CI checks locally.
-
-## Step 3b – MLflow tracking and model registry
-
-```bash
-docker compose up -d mlflow     # UI: http://localhost:5050 (5000 is taken by AirPlay on macOS)
-python -m training.track        # train + log to MLflow + register (needs make data and make install-train)
-python -m training.track --stub --stub-auc 0.97   # fake training: tries the registry without data or PyTorch
-```
-
-- Each run logs the parameters, validation metrics, tags (`git_commit`, `purpose=training`) and `model/model.pt`.
-- **Quality gate:** a model is registered as `skysat-satisfaction` only if validation **ROC AUC ≥ 0.95**.
-  Real models on this dataset score 0.98–0.996 (step 8), so the gate catches broken models, not merely weaker ones.
-- The `champion` alias moves to the new version only if its ROC AUC is higher than the current champion's,
-  **both measured on the same validation rows**: the champion is downloaded and re-scored, not judged by the number
-  stored when it was trained (that number may come from other rows, e.g. step 7's recent holdout).
-  The API (step 4) loads `models:/skysat-satisfaction@champion`, so a better model goes live without a code change.
-- Runs and models are kept in the `mlflow-data` Docker volume. `docker compose down -v` deletes them.
-
-## Step 4 – Prediction API
-
-```bash
-docker compose up -d --build       # MLflow + API (+ Nginx from step 5); Swagger: http://localhost:8080/docs
-curl localhost:8080/health         # {"status":"ok","model_version":"1",...}
-curl localhost:8080/model          # serving version + its validation metrics
-```
-
-- FastAPI service in [api/main.py](api/main.py): `POST /predict`, `GET /health`, `GET /model`.
-- The request body is generated from [skysat/schema.py](skysat/schema.py): unknown categories, ratings outside 0–5,
-  missing fields or an extra `satisfied` label are rejected with 422.
-- On a fresh start (`docker compose down -v`) there is no model yet: `/health` and `/predict` answer 503 until
-  `python -m training.track` registers a champion; the API copies then load it by themselves.
-- The model is **not** inside the image. At start the API downloads `skysat-satisfaction@champion` from MLflow and
-  checks the alias every 10 s; a new champion is swapped in while requests keep being served. It must first answer a
-  made-up passenger: if this image's code cannot run it, the old model stays (with no old model, `/health` answers 503).
-  If MLflow is down, the API keeps serving the model it already has.
-- Preprocessing comes from the same `training/train.py` that trained the model (no training/serving skew).
-
-## Step 5 – Scaling and load test
-
-```bash
-docker compose up -d --build                     # MLflow + 3 API copies + Nginx on http://localhost:8080
-docker compose --profile loadtest run --rm --no-deps k6     # k6: 50 users for 30 s against POST /predict
-docker compose up -d --scale api=1 --no-recreate            # try with 1 copy, then --scale api=3 again
-```
-
-- [nginx/nginx.conf](nginx/nginx.conf) spreads requests round-robin over the copies (`X-Upstream` response header
-  shows which one answered) and re-reads Docker's DNS, so scaling up or down needs no Nginx restart.
-- [loadtest/predict.js](loadtest/predict.js) sends random but valid passengers (no dataset rows); it fails if more
-  than 1% of requests fail or p95 latency is above 500 ms.
-- Each API copy uses one PyTorch thread, so more copies = more CPU used in parallel.
-
-Measured on a MacBook Pro M1 (Docker Desktop, 10 CPUs), 50 virtual users, 30 s:
-
-| API copies | Requests/s | Avg latency | p95 latency | Errors |
-|---|---|---|---|---|
-| 1 | 356 | 140 ms | 182 ms | 0 |
-| 3 | 856 (2.4×) | 58 ms | 137 ms | 0 |
-
-Lesson learned: `docker compose run k6` without `--no-deps` restarts the API with `replicas: 3`, so a "1 copy" test
-silently ran with 3 copies and showed no difference.
-
-## Step 6 – Prediction logging and monitoring
-
-```bash
-docker compose up -d --build        # adds PostgreSQL and Grafana
-python -m simulator.simulate generate --mode normal --n 2000 --url http://localhost:8080/predict
-open http://localhost:3000          # Grafana dashboard "SkySat – model in production" (no login needed)
-```
-
-- Every `POST /predict` is written to PostgreSQL (table `predictions`, [monitoring/init.sql](monitoring/init.sql)):
-  the 22 inputs, probability, prediction, model version, which API copy answered, and the time it took.
-- The simulator then sends the passenger's real answer (the survey result) to `POST /feedback`, which fills in
-  `actual`. This is how the model's accuracy can be measured in production.
-- If the database is down, the API still answers; it only logs a warning (monitoring must not break serving).
-- Grafana reads PostgreSQL directly (no Prometheus). The dashboard is in the repo
-  ([monitoring/grafana/dashboards/skysat.json](monitoring/grafana/dashboards/skysat.json)) and loads automatically:
-  serving model version, number of predictions, accuracy and ROC AUC (overall and over time), requests per API copy,
-  latency p50/p95, predicted vs real satisfied share, model version over time.
-- ROC AUC is computed in SQL from ranks (Mann–Whitney) with average ranks for ties; checked against scikit-learn
-  on the same rows (0.995575 both).
-
-## Step 7 – Drift detection and retraining
-
-```bash
-python -m training.retrain --check-only   # only measure drift
-python -m training.retrain                # measure drift; if found: retrain, compare, promote
-```
-
-[training/retrain.py](training/retrain.py) reads the latest 2,000 predictions from PostgreSQL and:
-
-1. **Detects drift** with the Population Stability Index of every feature against the training data
-   ([skysat/monitoring.py](skysat/monitoring.py)). Drift = any feature with PSI ≥ 0.2. No drift → nothing happens.
-2. **Retrains** on the training data plus the recent passengers that have a real answer (70%, repeated 5 times so
-   ~1,400 new rows are not drowned by 83,000 old ones). The other 30% is a holdout.
-3. **Quality gate:** the champion and the challenger are scored on the **same** recent holdout. The challenger is
-   registered if ROC AUC ≥ 0.95 and becomes `champion` only if it is better. The API copies load it within ~10 s.
-
-Everything is logged to MLflow (`purpose=retraining`): PSI per feature, both scores, the challenger's score on the
-original validation set, and the model file.
-
-Measured end to end with `docker compose up` (3 API copies), 2,000 passengers per phase:
-
-| Phase | Serving version | Accuracy (real answers) |
-|---|---|---|
-| Normal traffic | 1 | 96.25% |
-| Winter storm, before retraining | 1 | 91.20% |
-| Winter storm, after retraining (new passengers, `--seed 2`) | 2 | 94.35% |
-
-- Normal traffic: highest PSI 0.001 → no drift. Storm traffic: PSI 0.44–1.30 on exactly the 9 features the storm
-  changes (2 delays, 7 ratings), ≤ 0.004 on the other 13.
-- Retraining: champion 0.957 vs challenger 0.990 ROC AUC on the same holdout → version 2 promoted; it still scores
-  0.994 on the original (no storm) validation set.
-- The weight 5 was picked in an offline test on 3,000 unseen storm passengers (weights 1 / 5 / 10 / 20 →
-  ROC AUC 0.977 / 0.986 / 0.986 / 0.985, champion 0.954).
-- Use a different `--seed` for traffic after retraining: the same seed sends the same passengers the model has just
-  been trained on, and the recovery would look better than it is.
-
-## Step 8 – CI/CD and continuous training (CT)
-
-The map of all the pieces is in [docs/architecture.md](docs/architecture.md). Four automated loops:
-
-| Loop | Workflow | Runs on | When | What |
-|---|---|---|---|---|
-| **CI** | `ci.yml` → `test`, `image` | GitHub's servers | every push / pull request | pytest on **fake data** (incl. training every model type), compose check, API image build |
-| **CT** | `ct.yml` → `train` | GitHub's servers | `make add-ct`, the *Run workflow* button, new training code on `main` | download the dataset, train, register, promote the best: all in the **shared MLflow** |
-| **Drift** | `traffic.yml` → `send`, `drift.yml` → `check` | GitHub's servers, against [the team's server](docs/server.md) | every hour; `make storm`, `make drift-check` | simulated passengers to the server; drift check on its log; retrain, gate, promote when it drifted |
-| **CD** | `ci.yml` → `deploy` | [the team's server](docs/server.md) (self-hosted runner), once switched on | push to `main`, after CI | push image to `ghcr.io/<repo>-api`, pull it on the server, `docker compose up -d`, smoke test |
-
-On a PC, drift retraining (step 7, `make retrain`) is a command you run next to that PC's prediction log. On the
-server nobody runs it: GitHub does, every hour ([the automatic loop](#the-automatic-loop-on-the-server) below).
-
-### CT on GitHub, results in one shared MLflow
-
-No team PC has to be on. GitHub's run queue is the job queue and its machines are the workers:
-
-```bash
-make add-ct ARGS="--model random_forest"        # ask GitHub to train one model (mlp, logistic_regression, random_forest,
-                                                # gradient_boosting[_tuned], lightgbm, xgboost, extra_trees, decision_tree, knn)
-make add-ct ARGS="--model mlp --rating-one-hot --epochs 30 --name mlp-30-epochs"
-make add-ct ARGS=--all                          # the 9 standard candidates
-make list-ct                                    # recent CT runs: queued / in progress / success / failure
-make ct-local ARGS="--model mlp --epochs 5"     # the same training on this computer (needs `make data`)
-make smoke                                      # what CD checks after a deploy: /health + /predict via Nginx
-```
-
-Every CT run ([training/ct.py](training/ct.py)) downloads the **original** Kaggle dataset (the one `make data`
-uses, not the competition data), trains each requested model on the same split, logs it to the team's MLflow on
-**DagsHub** (`purpose=ct`, `model_type`), registers it if ROC AUC ≥ 0.95 and makes it `champion` if it beats the
-current one. Both team members' APIs load the champion from that same MLflow, so everyone serves the same model.
-The data only lives on GitHub's temporary machine; it is never printed, uploaded or committed.
-
-The API serves scikit-learn models (`model.joblib`) as well as the MLP (`model.pt`); `GET /model` shows
-`model_type`.
-
-Measured on the team PC (Linux, CPU only) with the same training code, the 5 candidates on a fresh MLflow,
-original dataset (83,123 train / 20,781 validation rows):
-
-| Order | Model | Validation ROC AUC | Result |
-|---|---|---|---|
-| 1 | logistic_regression (one-hot ratings) | 0.9807 | version 1, champion |
-| 2 | random_forest | 0.9941 | version 2, champion |
-| 3 | gradient_boosting | 0.9952 | version 3, champion |
-| 4 | mlp | 0.9948 | version 4, champion stays |
-| 5 | mlp_rating_one_hot | 0.9955 | version 5, **champion** |
-
-- LightGBM and XGBoost were added later (fixed settings in `training/train.py`, chosen before training). Same data,
-  3 seeds each: lightgbm 0.9957, xgboost 0.9955 (mean; seed-to-seed spread ≤ 0.0001). The 5 above reproduce
-  exactly. Random searches scored by 5-fold CV on train.csv only (validation used once, for the winner):
-  gradient boosting 0.9951 → **0.9958** (`gradient_boosting_tuned`, 72 settings); LightGBM 0.9956, XGBoost 0.9957
-  and MLP 0.9956 did not beat their fixed settings by more than noise. `ensemble` (CT candidate, one file): tuned
-  gradient boosting + tuned LightGBM + tuned MLP, their logits averaged; members and averaging chosen by 5-fold CV
-  (0.99568, best of all 15 member sets × 2 averaging methods); validation 0.99605, seed-to-seed spread 0.00003.
-- On request only (`--model`), same split: extra_trees 0.9912 (100 trees, leaf ≥ 10: 35 MB instead of 160 MB),
-  decision_tree 0.9883, knn 0.9803 (25 neighbours). Naive Bayes was tried and left out: 0.9227 fails the 0.95 gate.
-- macOS only: PyTorch and LightGBM/XGBoost bring different OpenMP runtimes and crash together when both run
-  multi-threaded, so on a Mac they use one thread ([training/__init__.py](training/__init__.py)). Linux is unaffected.
-- The top three are within 0.0007 of each other: about the size of the seed-to-seed noise measured earlier
-  (≤ 0.0005), so "best" here is partly luck.
-- `make ct-local ARGS="--model logistic_regression --rating-one-hot"` reproduces 0.9807 exactly (fixed seeds).
-- Before comparing, CT re-scores the champion on the same validation rows (`Champion (version 5) on the same rows:
-  roc_auc 0.9955`). Those rows are the original, pre-storm passengers, so during a storm a CT round can still
-  replace the storm-adapted model with one that is better on normal passengers. On the server the loop below then
-  repairs it: the new champion's drift reference is its training data, so the next hourly check sees the storm again.
-
-### The automatic loop on the server
-
-The whole lifecycle runs with every team PC off: data arrives, the system notices it changed, retrains, checks and
-serves the better model.
-
-```
-traffic.yml (:05 every hour)  500 simulated passengers + their real answers -> the server (HTTPS + login)
-                              weather calendar: storm 06:00-18:00 UTC every second day (19 November is one)
-drift.yml   (:35 every hour)  GET /predictions/recent: the champion's latest 1,000 predictions
-                              PSI per feature vs the champion's drift reference
-                              drift -> retrain (original data + recent x 5), both scored on the same recent holdout,
-                              quality gate -> new champion in DagsHub -> the server switches within a minute
-```
-
-```bash
-make storm                   # GitHub sends 1,000 storm passengers now (for the video; N=... for another number)
-make drift-check             # GitHub checks now instead of at :35; the PSI table is on the run's summary page
-make list-loop               # recent traffic and drift-check runs
-```
-
-**Why each model keeps its own drift reference.** Every CT and retraining run logs `drift_reference.json`: per
-feature, its bins and the share of rows in each (no rows, so it may sit in the public registry). The check compares
-traffic with the reference of the newest fair comparison the champion went through. Comparing always with the
-original data would flag a storm forever, and retrain every hour, after the model has already adapted to it.
-
-**Measured locally (2026-11-07)**, the same code against a throw-away stack (`--source http://localhost:8080`,
-window 1,000), MLP champion:
-
-| Phase | Check | Result |
-|---|---|---|
-| 600 normal passengers | PSI vs training data: max below 0.2 | no drift |
-| 1,000 storm passengers | 9 storm features flagged (PSI 0.38–1.26), the other 13 not | retrained: 0.9874 vs champion 0.9771 on the same 300 → **version 3** champion; the API switched |
-| 800 more storm passengers | vs version 3's reference (the storm traffic) | no drift: no hourly retraining while the storm lasts |
-| 1,000 normal passengers | 9 features flagged: the storm ended | retrained: 0.9918 vs **0.9928** → version 3 kept (it handles both); its reference moved |
-| 500 more normal passengers | vs that newest check | no drift |
-
-A weak logistic-regression champion showed the other path: its storm challenger reached 0.922, below the 0.95 gate,
-so nothing was registered, the reference stayed and the run failed. A red run means "the data changed and no good
-enough model came out": a person should look. The next hour tries again with newer passengers.
-
-### One-time setup
-
-**DagsHub (the shared MLflow).** Check DagsHub's pages as you go; its menus may have moved.
-
-1. Both team members create a free DagsHub account.
-2. One of you creates a DagsHub repository (e.g. `skysat-mlops`) and adds the other as a collaborator. Ours is
-   **public**: anyone can read the runs, metrics and model files, so the tutor can look without an account; only a
-   token with access can change anything. So never log dataset rows there (we log metrics, plots, small summary
-   tables, the data card and the models). A private repo has lower limits on the free plan: 2 collaborators and 100
-   tracked runs at the time of writing.
-3. Its MLflow address is `https://dagshub.com/<owner>/<repo>.mlflow`. Each of you creates a DagsHub token and puts
-   the three `MLFLOW_TRACKING_*` lines from [.env.example](.env.example) into your own `.env`.
-4. **First check:** `make data` then `make ct-local ARGS="--model logistic_regression --rating-one-hot"`. It must end
-   with `registered as version 1` after `Version 1 is the new champion`. That proves DagsHub accepts runs, model
-   versions and the `champion` alias (which the API needs). If the alias step fails, stop and ask.
-
-**GitHub (repository owner, once):** Settings → Secrets and variables → Actions.
-
-| Kind | Name | Value |
-|---|---|---|
-| Variable | `MLFLOW_TRACKING_URI` | `https://dagshub.com/<owner>/<repo>.mlflow` |
-| Variable | `MLFLOW_TRACKING_USERNAME` | the DagsHub user whose token is below |
-| Secret | `MLFLOW_TRACKING_PASSWORD` | that DagsHub token |
-| Secret | `SKYSAT_SERVER` | the server's address, without `https://` (traffic.yml, drift.yml) |
-| Secret | `SKYSAT_LOGIN` | `github:<password>`: a gateway login only for GitHub ([docs/server.md](docs/server.md#the-automatic-loop)) |
-
-Secrets never appear in logs, and runs started by strangers' pull requests never receive them. GitHub only lets you
-start a workflow by hand once its file is on `main`, so merge first; after that `make add-ct CT_REF=<branch>`
-trains with another branch's code.
-
-**CD to the server (self-hosted runner).** The steps are in [docs/server.md](docs/server.md). Without the repository
-variable `DEPLOY_TO_RUNNER=true` the `deploy` job is skipped.
-
-## Step 9 – Demo scenario and documentation
-
-The 3-minute demo (a recorded video, after the slides) has three parts: the CT candidates and the champion the
-quality gate picked (DagsHub), a new Kaggle submission and its score, and the drift story: **the model degrades,
-the system notices, one command retrains it, and it recovers.** The drift part runs in a Docker project of its own with the
-DagsHub settings switched off on the command line, so it never touches the shared MLflow or your normal stack. Full guide: [demo/README.md](demo/README.md).
-
-```bash
-make simulate MODE=drift N=2000 SEED=2   # new: send passengers to the API on :8080 (steps 6-7)
-make retrain ARGS=--check-only           # new: drift check; without ARGS: retrain and promote if better
-```
-
-| Phase | Serving version | Accuracy (real answers) |
-|---|---|---|
-| Normal traffic | 1 | 96.25% |
-| Winter storm, before retraining | 1 | 91.75% |
-| Winter storm, after retraining (`SEED=2`) | 2 | 94.75% |
-
-`make retrain` refuses to run against the shared MLflow, because a promotion there changes the **team's** champion and
-what the server serves. The demo uses `dmake`; `make retrain SHARED=yes` overrides it on purpose.
-
-## Kaggle competition track
-
-A separate track for the leaderboard of [Playground S6E10](https://www.kaggle.com/competitions/playground-series-s6e10)
-(metric ROC AUC, 10 submissions per day, final deadline 2026-10-31 23:59 UTC). Separate because the competition
-files have other columns (no "Inflight service", True/False target) and must stay on the team's PCs, so this never
-runs on GitHub and never touches the API's model registry.
-
-```bash
-make submission                       # 5-fold CV + artifacts/kaggle/submission.csv, logged to MLflow `skysat-kaggle`
-                                      # slow and loud: RealMLP alone takes ~5 min per fold on 22 CPU cores
-make submit MSG="hgb, 127 leaves"     # upload it (needs a Kaggle token in ~/.kaggle/access_token: Kaggle → Settings → API)
-make kaggle-scores                    # the team's submissions and their public leaderboard scores
-```
-
-[training/competition.py](training/competition.py): LightGBM + XGBoost + RealMLP, 5-fold stratified
-cross-validation on the 699,635 competition train rows; the submission averages the 5 fold models' predictions.
-Settings chosen by CV ROC AUC (all runs in the file's docstring):
-
-| Setting | CV ROC AUC |
+| Stage | Where |
 |---|---|
-| scikit-learn defaults | 0.95767 ± 0.00063 |
-| + the original dataset as extra training rows (allowed external data) | 0.95727 (worse in all 5 folds) |
-| scikit-learn: learning rate 0.05, up to 1000 rounds, 127 leaves | 0.95853 ± 0.00053 |
-| LightGBM + XGBoost + RealMLP, inputs from the original dataset and in-fold target encoding (**default**) | **0.96113 ± 0.00054** |
+| Train + gate + register | `llm/train_lora.py` on a GPU; MLflow experiment `skysat-llm`, model `skysat-reviews`, alias `champion` |
+| Serve | `api` service (`llm/serve.py`, CPU, 8 GB), behind Nginx: `/score`, `/model`, `/health`, `/docs` |
+| Monitor | `llm_scores` table → Grafana; `GET /scores/recent?hours=N` returns aggregates only |
+| Drift | `llm/drift_check.py`: DRIFT if live MAE > 1.0 or recommended accuracy < 0.90 on >= 50 labelled requests |
+| CI/CD | `ci.yml`: tests, compose check, image build, deploy (main only, if switched on) |
+| Schedule | `traffic.yml` hourly replay and `drift.yml` hourly drift check (both commented out until the final run); drift opens a GitHub issue |
+| Retrain | by a person on a GPU: `make llm-cycle`. GitHub has no GPU |
 
-Latest submission (the competition closed on 2026-10-31): public 0.96091, private 0.96151.
-
-- Same settings → byte-identical submission (sha256 printed and logged), so a leaderboard score can always be traced
-  back to its MLflow run.
-- The public leaderboard scores only part of the test set; the private part decides. Choose by CV, not by chasing
-  the public score.
-
-## Status
-
-- [x] Step 1 – Environment and repository skeleton
-- [x] Step 2 – Data preparation and traffic simulator
-- [x] Step 3 – Model training and MLflow
-- [x] Step 4 – Prediction API
-- [x] Step 5 – Scaling and load test
-- [x] Step 6 – Prediction logging and monitoring
-- [x] Step 7 – Drift detection and retraining
-- [x] Step 8 – CI/CD and continuous training
-- [x] Step 9 – Demo scenario and documentation (video: record before the presentation)
-- [ ] Step 10 – Presentation
-
-## Quick check
-
-```bash
-docker compose up
-# expected output: SkySat: Docker ortami hazir
-```
+See [docs/architecture.md](docs/architecture.md) for the picture and [docs/server.md](docs/server.md) for the always-on server.

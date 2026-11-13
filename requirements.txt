@@ -1,10 +1,8 @@
+# What the tests, the replay (simulator/replay.py) and the drift check (llm/drift_check.py) need: no torch, no
+# transformers (CI and `make install`). Training and serving packages: requirements-llm.txt and llm/Dockerfile.
 numpy==2.1.3
 pandas==2.2.3
-scikit-learn==1.5.2
-lightgbm==4.7.0
-# XGBoost: the CPU-only build on Linux (the plain Linux wheel also pulls ~200 MB of NVIDIA GPU libraries);
-# xgboost-cpu has no macOS wheels, so other systems use the plain package (CPU-only there anyway).
-xgboost-cpu==3.4.1; sys_platform == "linux"
-xgboost==3.4.1; sys_platform != "linux"
-mlflow==3.17.1
-matplotlib==3.11.2  # training plots in MLflow (training/insight.py); not needed by the API
+fastapi==0.143.1
+pydantic==2.14.1
+psycopg[binary]==3.3.6
+psycopg-pool==3.3.3

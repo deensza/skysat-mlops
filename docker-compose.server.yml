@@ -18,8 +18,6 @@ services:
   api:
     logging: *small-logs
     restart: unless-stopped
-    deploy:
-      replicas: 1  # 1 GB of RAM: a restart took 6.5 min with 2 copies (swapping), about 2 min with 1
     depends_on: !override
       postgres:
         condition: service_healthy

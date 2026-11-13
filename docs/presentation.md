@@ -7,234 +7,129 @@ What the assignment asks for, and where it is answered:
 
 | Requirement (Demo Instructions) | Where |
 |---|---|
-| Motivation for the topic | slides 2–3 |
-| Architecture | slides 4–5, [architecture.md](architecture.md) |
+| Motivation for the topic | slides 2-3 |
+| Architecture | slides 4-5, [architecture.md](architecture.md) |
 | Brief document / presentation with the public GitHub link | this file (slides are built from it) |
-| A RUNNING code example | slide 11 + the video, [demo/video.md](../demo/video.md) |
+| A RUNNING code example | slide 10 + the video, [demo/video.md](../demo/video.md) |
 
 Open points (tick when done):
 
 - [ ] Build the slides from this file (one `##` = one slide; speaker notes under each)
-- [ ] Re-measure the numbers marked *(re-check)* on the final stack before presenting
-- [ ] Record the video ([demo/video.md](../demo/video.md)) and put its link on slide 11
+- [ ] Re-measure the numbers on the final stack before presenting; the server numbers (slide 8) are not measured yet
+- [ ] Record the video ([demo/video.md](../demo/video.md)) and put its link on slide 10
+- [ ] Enable the two schedules (`traffic.yml`, `drift.yml`) for the final run, and say so on slide 9
 - [ ] Upload slides (with the GitHub link) and code to Moodle
-- [ ] CD: the repository owner switches on the deploy step on the server ([server.md](server.md)), then prove it with a
-      push to `main`. Until that has worked, slide 10 must say "built, not yet switched on"
-- [x] At the end: merge `osm` into `main` → CT on GitHub trains the 9 candidates (incl. `ensemble`, local
-      validation ROC AUC 0.99605, logit-averaged) on DagsHub → both rebuild the API image (`make d-build`) → update slide 6
-      with the new champion. Not before: `main`'s code cannot load an ensemble (same failure as the LightGBM
-      champion, slide 12). Done 2026-10-30: ensemble = champion v36 (0.9960). Each PC: `git pull`, `make d-build`
 - [ ] Rehearse once with a timer (target: ~10 min slides + 3 min video + questions)
 
 ---
 
-## 1. SkySat: an airline satisfaction model, from notebook to production
+## 1. SkySat: a complaint box for airline reviews, from notebook to production
 
-- Predict whether an airline passenger is **satisfied**, from 22 answers (flight, delays, service ratings)
+- An LLM reads a **real airline review** and answers: score out of 10, recommended yes/no, main complaint
 - The model is the easy part; the project is **everything around it**
 - Public code: github.com/deensza/skysat-mlops
 
-> Notes: introduce the team and the one-sentence goal. Say up front that the topic is the lifecycle, not the
-> algorithm: the model type is one setting, and the pipeline picks the best one by its score.
+> Notes: introduce the team and the one-sentence goal. The topic is the lifecycle, not the algorithm.
 
 ## 2. Motivation: why do we need MLOps?
 
 - A model in a notebook helps nobody; it must be **served, watched and replaced**
-- Typical failures without MLOps:
-  - "It worked on my machine": different data, packages or settings
-  - Nobody knows which model is in production or how it was trained
-  - The world changes (**drift**), accuracy drops silently
-  - Retraining is manual, so it does not happen
+- Typical failures without MLOps: "it worked on my machine", nobody knows which model is in production, the world
+  changes (**drift**) and accuracy drops silently, retraining is manual so it does not happen
 - MLOps = DevOps ideas (automation, CI/CD, monitoring) **plus** data and models as versioned things
 
-> Notes: one concrete example: a satisfaction model trained in summer meets a winter storm: delays explode,
-> ratings drop, the model keeps answering confidently and is wrong more often. Nobody notices without monitoring.
+> Notes: one example: a model tuned on pre-2019 reviews meets a survey whose raters are harsher.
 
-## 3. What kind of problems is MLOps good for?
+## 3. Why an LLM changes the picture (and what stays the same)
 
-- Any model that is **used repeatedly** on new data: recommendations, fraud, demand, churn, satisfaction
-- When the data **changes over time** and the model must keep up
-- When a **team** trains models and must agree on which one is "the" model
-- Not needed for a one-off analysis that is read once
-
-> Notes: the assignment's Firebase example asks "what sort of apps is it good for". This is our answer for MLOps.
+- Same lifecycle: data, train, gate, register, promote, serve, monitor, retrain
+- Different: the 3 GB base model is **frozen**; we train a **17 MB LoRA adapter** (~0.3% of the weights), so a "new
+  model" is a small download
+- Training needs a **GPU** (5 min on an RTX 4070) so it is not on GitHub; serving is on CPU and takes seconds per review
 
 ## 4. The lifecycle we built
 
-```
-data → training → tracking & registry → packaging → serving → scaling → monitoring → drift → retraining
-                                   ↑                                                        │
-                                   └──────────────── CI / CD / CT (automation) ─────────────┘
-```
-
-| Stage | Tool | Why this tool |
-|---|---|---|
-| Data prep + traffic simulator | Python, pandas | clean split; fake "live" passengers, incl. a storm |
-| Training | PyTorch, scikit-learn, LightGBM, XGBoost | 11 model types, same preprocessing code |
-| Experiment tracking + model registry | **MLflow** (shared on **DagsHub**) | every run logged; one `champion` alias |
-| Packaging | **Docker**, Docker Compose | the same image on every machine |
-| Serving | **FastAPI** | `/predict`, loads the champion, swaps in a new one without restart |
-| Scaling + load test | **Nginx** (3 API copies), **k6** | load balancing; measured throughput |
-| Monitoring | **PostgreSQL** + **Grafana** | every prediction logged; live accuracy dashboard |
-| Drift + retraining | PSI per feature, MLflow | detect the storm, retrain, promote if better |
-| CI / CD / CT | **GitHub Actions** | tests, image build, deploy, training on GitHub's machines |
-
-> Notes: walk left to right once. Each later slide zooms into one box.
+| Stage | Tool |
+|---|---|
+| Data | Kaggle *128k airline reviews* (DbCL-1.0), split by date and airline |
+| Training + gate | LoRA (r=16, 2,000 reviews) on Qwen2.5-1.5B-Instruct; gate on MAE, recommended, complaint |
+| Tracking + registry | **MLflow** (`skysat-reviews@champion`) |
+| Packaging | **Docker**, Docker Compose |
+| Serving | **FastAPI** `POST /score`, behind **Nginx** |
+| Monitoring | **PostgreSQL** `llm_scores` + **Grafana** |
+| Drift | live MAE and recommended accuracy against the gate (`llm/drift_check.py`) |
+| CI / CD | **GitHub Actions**: tests, image, deploy; hourly replay and drift check |
 
 ## 5. Architecture
 
-```mermaid
-flowchart LR
-  subgraph GitHub
-    code[Code + PRs] --> ci[CI/CD: tests, image, deploy]
-    code --> ct[CT: train candidates]
-  end
-  ct -->|runs, models, champion| dags[(DagsHub MLflow<br/>registry)]
-  sim[Simulator<br/>normal / storm] --> nginx[Nginx :8080]
-  nginx --> api1[API copy 1] & api2[API copy 2] & api3[API copy 3]
-  dags -->|champion, every 10 s| api1 & api2 & api3
-  api1 & api2 & api3 --> pg[(PostgreSQL<br/>prediction log)]
-  pg --> graf[Grafana dashboard]
-  pg --> retrain[Drift check + retrain]
-  retrain -->|new champion if better| dags
-```
+See the diagram in [architecture.md](architecture.md): GPU PC → MLflow (adapter) → API on CPU → PostgreSQL → Grafana;
+GitHub replays traffic, checks drift and opens an issue; a person retrains.
 
-> Notes: two loops: the **training loop** (GitHub → DagsHub) and the **serving loop** (simulator → API → log →
-> Grafana). Drift detection connects them: production data goes back into training. Full description:
-> [architecture.md](architecture.md). Training and the registry are shared and always on. Serving and monitoring run
-> on the team's small Azure server ([server.md](server.md)): 1 API copy on 1 GB of RAM. The 3 copies and the storm demo
-> run on a PC. Say that limit before anyone asks.
+> Notes: two loops: the training loop (GPU → MLflow) and the serving loop (traffic → API → log → Grafana). Drift
+> detection connects them. Monitoring stores numbers, never review text.
 
-## 6. Training and model selection
+## 6. Training, the gate and the champion
 
-- Same data split for every model: 83,123 training rows, 20,781 validation rows (never used to choose settings)
-- 9 standard candidates trained by CT; the **quality gate**: register if ROC AUC ≥ 0.95, `champion` only if it
-  beats the current champion **re-scored on the same rows**
+| Adapter | Reviews | MAE | Recommended | Gate |
+|---|---|---|---|---|
+| v1 (2,000 reviews flown <= 2018) | validation | 0.91 | 94.5% (complaint 68%) | passes: champion |
+| v1 | real 2019-2022 | 0.75-0.83 | | passes |
+| v1 | 2019, "harsh" survey | 1.18 | 89.5% | **fails** |
+| v2 (retrained on harsh 2019) | harsh 2019 | 0.41 | 95.5% | passes, promoted |
 
-| Model | Validation ROC AUC (3 seeds) |
-|---|---|
-| ensemble: tuned gradient boosting + tuned LightGBM + tuned MLP, logits averaged | **0.9960** (champion, v45) |
-| gradient boosting, tuned by 5-fold CV on training rows only | 0.9958 (champion v8 before) |
-| LightGBM | 0.9957 |
-| XGBoost | 0.9955 |
-| MLP (PyTorch), one-hot ratings | 0.9954 |
-| gradient boosting, defaults | 0.9951 |
-| MLP | 0.9948 |
-| random forest | 0.9941 |
-| logistic regression | 0.9807 |
+- Gate limits: MAE <= 1.0, recommended >= 0.90, complaint >= 0.65; a new adapter must also beat the champion on the same reviews
+- Real 2019-2022 drift does **not** hurt the model, so the drift is simulated (`simulator/scenarios.py`)
 
-- The top four are within 0.0004: about the size of the noise. Honest reporting matters more than the 4th decimal.
+## 7. Serving and monitoring
 
-> Notes: the majority-class baseline is 0.567 accuracy, so 0.99 ROC AUC is not "free". Mention that tuning used
-> cross-validation on the training rows only; the validation rows were scored once at the end.
+- `POST /score` → score, recommended, complaint, model version, latency; one review at a time on CPU
+- A new champion is a new adapter loaded next to the old one on the same base model: no restart
+- Grafana: requests per hour, latency p50/p95, live MAE and recommended accuracy (where true labels were sent),
+  complaint shares, model version over time
+- `GET /scores/recent`: aggregates only
 
-## 7. Experiment tracking and the model registry (MLflow on DagsHub)
+## 8. The server
 
-- Every training run: parameters, 7 metrics, git commit, the model file
-- Registry: every model that passes the gate becomes a new version of `skysat-satisfaction`; the API asks for
-  **`@champion`**, never a version number
-- Shared on DagsHub, so both team members and GitHub's CT machines see the same runs and the same champion
+- One always-on VM (>= 8 GB RAM): Caddy (HTTPS), Nginx (rate limit, login), `api`, PostgreSQL, Grafana ([server.md](server.md))
+- Server measurements with the LLM: *(not measured yet: restart time, latency per review)*
 
-> Notes: show DagsHub in the video (scene 1). Point: changing the champion changes production without a code
-> change or redeploy.
+## 9. CI / CD and the automatic loop
 
-## 8. Serving and scaling
+- **CI**: tests (no GPU, no model), compose files valid, image built without any model download
+- **CD**: on `main` only, never for pull requests; image to ghcr.io, deploy on the server's runner once it is switched on
+- **traffic.yml** replays live reviews (optionally `harsh`); **drift.yml** checks them and opens the issue "Drift detected:
+  retrain the LoRA adapter (make llm-cycle)". Schedules written, enabled for the final run
+- **Retraining is not on GitHub**: no GPU. A person runs `make llm-cycle`
 
-- FastAPI: `POST /predict` → satisfied yes/no, probability, model version, which copy answered
-- 3 API copies behind Nginx (round robin). k6, 50 virtual users for 30 s:
+## 10. Live demo (video, ~3 min)
 
-| API copies | Requests/s | p95 latency | Errors |
-|---|---|---|---|
-| 1 | 356 | 182 ms | 0 |
-| 3 | 856 (2.4×) | 137 ms | 0 |
-
-*(Measured on a MacBook Pro M1 with the first model, an MLP; not yet with the ensemble, which is slower per prediction: re-check. The server runs 1 copy, so scaling is a PC measurement)*
-
-> Notes: lesson learned: a first "1 copy" test silently ran with 3 copies (Docker Compose restarted them).
-> Measuring the wrong thing is easy; check what you measure.
-
-## 9. Monitoring and drift
-
-- Every prediction goes to PostgreSQL; the simulator later sends the passenger's real answer → **accuracy in
-  production**, not only on a test set
-- Grafana: model version, predictions, accuracy and ROC AUC over time, requests per copy, latency
-- Drift check: Population Stability Index (PSI) of every feature vs. the training data; drift = PSI ≥ 0.2
-
-| Phase | Serving version | Accuracy (real answers) |
-|---|---|---|
-| Normal traffic | 1 | 96.25% |
-| Winter storm, before retraining | 1 | 91.75% |
-| Winter storm, after retraining (new passengers) | 2 | 94.75% |
-
-- Storm: PSI 0.44–1.32 on exactly the 9 features the storm changes, ≤ 0.004 on the other 13
-
-> Notes: this is the core story of the demo video (scene 3). "The model degrades, the system notices, one command
-> retrains it, and it recovers." Retraining is started by hand: nothing runs it on its own.
-
-## 10. CI / CD / CT on GitHub Actions
-
-- **CI** (every push / PR): tests on **fake data** (incl. training every model type), Docker Compose check, API
-  image build
-- **CD** (on `main`): the API image is pushed to GitHub's registry (ghcr.io). The deploy step (pull the image on
-  the server, restart, smoke-test through Nginx) is written but **not yet switched on**: it needs a self-hosted
-  runner on the server, and the last `main` run shows `deploy: skipped`
-- **CT** (on request + when training code lands on `main`): trains the candidates on GitHub's machines → DagsHub; works with our PCs off
-- Competition data never leaves our PCs: CI uses synthetic passengers, CT downloads the public original dataset
-
-> Notes: good place for a real story, slide 12.
-
-## 11. Live demo (video, ~3 min)
-
-1. DagsHub: the candidates, their scores, the champion
-2. One prediction through Nginx; Grafana with normal traffic
-3. Winter storm → accuracy drops → drift detected → retrain → new champion → accuracy recovers
+1. MLflow: v1 champion and its gate scores
+2. One review through Nginx; Grafana with normal traffic
+3. `harsh` traffic → live MAE and accuracy cross the limits → `make llm-drift` says DRIFT
+4. Retrain on harsh 2019 → v2 promoted → the API loads it → Grafana recovers
 
 Video: *(link)* · Script: [demo/video.md](../demo/video.md)
 
-## 12. What went wrong, and what we learned
+## 11. What we learned
 
-- **A model in the registry must be loadable by production code.** A LightGBM model became the shared champion
-  while LightGBM was not yet in the main code; the next CT run and new API copies could not load it. Fix: dependencies
-  pinned, the champion replaced by a model the code could load, and a rule: merge the code before a model can become
-  the shared champion.
-- **"Healthy" must mean "can answer".** An API image older than the champion said ok on `/health` while every
-  `/predict` failed with a 500; the smoke test caught it. Now a new model must answer a test passenger before it
-  may serve; if it cannot, the old one stays.
-- **Configuration decides where things go.** `make` reads `.env`, so a "local" run went to the shared MLflow.
-  The demo now runs in its own Docker project with the shared settings switched off.
-- **Check what you measure**: the load test that was not testing 1 copy (slide 8); seed-to-seed noise vs. "better".
-- **An estimate is not a measurement.** 2 API copies "should fit" on the 1 GB server; a real restart took 6.5 minutes
-  of swapping, about 2 with 1 copy. So the server runs 1 copy.
+- The gate limits come from measured runs, not guesses (constant answers score MAE 1.2-3.2)
+- A registry version must be loadable by the production code: the API refuses an adapter for another base model or
+  prompt version and keeps the old one
+- Real drift did not hurt, so we measured that and simulated the rest instead of claiming a result
+- Monitoring that stores no text is enough to see the model degrade
 
-> Notes: teachers like honest failure stories, and this is exactly what MLOps exists to prevent.
+## 12. Summary and questions
 
-## 13. Bonus: the Kaggle competition track
-
-- Same dataset family: Kaggle Playground S6E10 *Predicting Airline Satisfaction* (metric ROC AUC)
-- Separate pipeline (other columns; data must stay on our PCs): 5-fold CV, logged to MLflow, every submission
-  traceable by its sha256
-- CV ROC AUC 0.96113 ± 0.00054 (LightGBM + XGBoost + RealMLP neural network, inputs from the original dataset and
-  in-fold target encoding; was 0.95853), public leaderboard 0.96091 (was 0.95789; public #1 0.96451 on 2026-10-30), private score 0.96151
-
-Video: [Google Drive](https://drive.google.com/drive/folders/1WBdX3AQdVqQV6cO-wTW8shrivhatKatB) · Script: [demo/kaggle-video.md](../demo/kaggle-video.md)
-
-## 14. Summary and questions
-
-- Built: a model with the **full lifecycle**: tracked, registered, packaged, served, scaled, monitored,
-  drift-aware, retrained, automated
-- Code and docs: github.com/deensza/skysat-mlops · Data: Kaggle Playground S6E10 (CC BY 4.0) and the original
-  Airline Passenger Satisfaction dataset
+- One model, the whole lifecycle: LoRA training, gate, registry, API, monitoring, drift check, CI/CD
+- Reproduce: `make install && make test`, then `make llm-cycle` on a GPU, `make d-up`
+- Data: Kaggle joelljungstrom/128k-airline-reviews (DbCL-1.0), scraped from airlinequality.com by the dataset author; never committed
 
 ### Likely questions (prepare an answer)
 
-- Why MLflow and not Weights & Biases? (open source, self-hostable, registry with aliases, DagsHub hosts it free)
-- Why PSI for drift? What threshold and why 0.2?
-- What happens if MLflow is down? (API keeps the model it has and retries; logging failure never breaks serving)
-- How do you stop a worse model from going to production? (quality gate, same rows for both models)
-- Why 3 API copies and not 10? (CPU-bound; measured scaling)
-- Where does production run? (A small always-on Azure VM, [server.md](server.md); its limits are in
-  [architecture.md](architecture.md) section 11: 1 copy, occasional stalls)
-- Can anyone use or damage it? (HTTPS, rate limit before login, 2 accounts, only ports 80 and 443 open, Grafana reads
-  with a read-only database user. Each was attacked from outside, the results are in [server.md](server.md))
-- What if it crashes? (Docker restarts containers; a watchdog restarts a hung API. Each failure was caused on purpose)
-- Does it retrain by itself? (The drift check and the retraining are one command; nothing starts them on its own)
+- Why LoRA and not fine-tuning everything? (0.3% of the weights: 5 minutes on one GPU, a 17 MB file to promote and ship)
+- Why does the gate have those limits? (measured: v1 passes, constant answers fail, v1 under the harsh survey fails; `llm/gate.py`)
+- Real drift did not hurt, so is the drift demo fake? (The scenario is simulated and we say so; the monitoring and the retrain path are real)
+- What happens if MLflow is down? (the API keeps the adapter it has and retries; a logging failure never breaks serving)
+- How do you stop a worse adapter from going to production? (the gate, and it must beat the champion on the same reviews)
+- Why is retraining not automatic? (it needs a GPU, which GitHub's machines do not have; the drift check opens an issue)
+- Where does production run, and what does it store? (an always-on VM, [server.md](server.md); numbers only, never review text)

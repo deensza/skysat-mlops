@@ -1,12 +1,13 @@
-# CI/CD (step 8). Pipeline: test -> image -> deploy.
-#   test    every push and pull request, on GitHub's servers, on a small fake dataset (no Kaggle files);
-#           the tests also train all 5 CT model types on it.
-#   image   builds the API Docker image; on main it is pushed to ghcr.io (code only, no data, no model).
+# CI/CD. Pipeline: test -> image -> deploy.
+#   test    every push and pull request, on GitHub's servers: pytest (no torch, no model, no dataset) and the
+#           Docker Compose files (local and server) must be valid.
+#   image   builds the complaint-box API image (llm/Dockerfile; no model inside: the 3 GB base model is downloaded at
+#           the first start); on main it is pushed to ghcr.io (code only, no data, no model).
 #   deploy  only on main, and only once the team's server has a self-hosted runner (label `skysat`) and the
 #           repository variable DEPLOY_TO_RUNNER=true is set: pulls the new image on the server, restarts the
 #           stack and smoke-tests it. Never runs for pull requests (see docs/server.md).
-# The model itself is not part of the image: the API serves whatever MLflow's `champion` alias points
-# to, and continuous training (.github/workflows/ct.yml) moves that alias.
+# The adapter is not part of the image: the API serves whatever MLflow's `skysat-reviews@champion` points to.
+# Nothing trains on GitHub (no GPU): retraining is `make llm-cycle` / `make llm-train` on a GPU machine or Colab.
 name: CI/CD
 
 on:
@@ -30,10 +31,8 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install dependencies (CPU-only PyTorch)
-        run: |
-          pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt -r api/requirements.txt pytest==8.3.3
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest==8.3.3
 
       - name: Run tests
         run: python -m pytest -v
@@ -53,11 +52,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build the API image
+      - name: Build the API image (the complaint box, no model download)
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}-api"
           echo "IMAGE=$image" >> "$GITHUB_ENV"
-          docker build -f api/Dockerfile -t "$image:$GITHUB_SHA" -t "$image:latest" .
+          docker build -f llm/Dockerfile -t "$image:$GITHUB_SHA" -t "$image:latest" .
 
       - name: Push to ghcr.io (main only)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -78,7 +77,7 @@ jobs:
       COMPOSE_PROJECT_NAME: skysat-mlops  # the stack already running on the server, so its data is kept
       COMPOSE_FILE: docker-compose.yml:docker-compose.server.yml
       COMPOSE_ENV_FILES: /opt/skysat/.env  # the server's own passwords (docs/server.md); never in git
-      MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}  # the APIs load the champion from the shared MLflow
+      MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}  # the API loads the champion from the shared MLflow
       MLFLOW_TRACKING_USERNAME: ${{ vars.MLFLOW_TRACKING_USERNAME }}
       MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
     steps:

@@ -1,16 +1,18 @@
-# Competition data must never end up inside an image (Kaggle rules, section 2.4.b).
+# The review dataset (DbCL-1.0, scraped from airlinequality.com) must never end up inside an image.
 # Mount data/ as a volume at run time instead.
 data/
 
 # Local artifacts and secrets
 mlruns/
 mlartifacts/
+artifacts/
 .env
 kaggle.json
 
 # Python / VCS noise
 .git/
 .venv/
+.venv-llm/
 venv/
 __pycache__/
 *.py[cod]

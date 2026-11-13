@@ -1,29 +1,36 @@
-# Simulated passengers for the team's server, every hour, so the lifecycle runs while every team PC is off.
-# 1. downloads the ORIGINAL Kaggle dataset (as ct.yml does) and prepares it: the simulator draws passengers from
-#    data/processed/live.csv, which no model is trained on
-# 2. sends them to the server through its gateway (HTTPS + login), each followed by its real answer (/feedback)
-# 3. --mode auto: the weather calendar in simulator/simulate.py decides normal or storm (storm 06:00-18:00 UTC
-#    every second day). The hourly drift check (drift.yml) notices, retrains and promotes by itself.
-# The data only lives on the temporary GitHub machine; nothing is printed or uploaded except to the server.
+# Simulated airline reviews for the team's server, so the monitoring has live traffic while every team PC is off.
+# 1. downloads the review dataset (Kaggle joelljungstrom/128k-airline-reviews, DbCL-1.0) onto the temporary GitHub
+#    machine; simulator/replay.py draws reviews flown >= 2019 from it, which the champion was never trained on
+# 2. posts them to the server through its gateway (HTTPS + login), each with its true score and recommendation, so the
+#    dashboard and the drift check (drift.yml) can measure the model's real accuracy
+# 3. --scenario simulates drift on top of the real reviews (simulator/scenarios.py): "harsh" is the one that makes
+#    the champion fail its gate
+# The data only lives on the temporary machine; nothing is printed or uploaded except to the server.
 #
-# By hand (for the video): `make storm`, or Actions → Traffic → Run workflow, mode drift.
-# Setup (repository owner, once): secrets SKYSAT_SERVER (the server's address, no https://) and SKYSAT_LOGIN
-# (user:password of a gateway login made for GitHub, docs/server.md).
+# Training does NOT run on GitHub: it needs a GPU. Retraining is `make llm-cycle` / `make llm-train` on a GPU PC.
+#
+# By hand: Actions -> Traffic -> Run workflow, or `gh workflow run traffic.yml -f scenario=harsh`.
+# Setup (repository owner, once): secrets SKYSAT_SERVER (the address, no https://), SKYSAT_LOGIN (user:password of a
+# gateway login made for GitHub, docs/server.md) and KAGGLE_API_TOKEN (to download the dataset).
 name: Traffic
 
 on:
-  schedule:
-    - cron: "5 * * * *"  # every hour at :05 (GitHub may start it a few minutes late)
+  # Enable for the final run: remove the `#` of the next two lines (GitHub starts it a few minutes late).
+  # schedule:
+  #   - cron: "5 * * * *"  # every hour at :05
   workflow_dispatch:
     inputs:
-      mode:
-        description: "auto = the weather calendar; normal; drift = winter storm"
+      scenario:
+        description: "Simulated drift on the reviews"
         type: choice
-        options: [auto, normal, drift]
-        default: auto
-      n:
-        description: "Passengers to send"
-        default: "500"
+        options: [none, typos, short, html, harsh, mixed]
+        default: none
+      from_month:
+        description: "First month to replay (YYYY-MM, 2019 or later)"
+        default: "2019-01"
+      per_month:
+        description: "Reviews per month"
+        default: "20"
 
 permissions:
   contents: read
@@ -34,17 +41,20 @@ concurrency:
 jobs:
   send:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       SKYSAT_SERVER: ${{ secrets.SKYSAT_SERVER }}
-      SKYSAT_LOGIN: ${{ secrets.SKYSAT_LOGIN }}  # read by simulator/simulate.py
-      MODE: ${{ inputs.mode || 'auto' }}  # read from env, never pasted into the script (no injection)
-      N: ${{ inputs.n || '500' }}
+      SKYSAT_LOGIN: ${{ secrets.SKYSAT_LOGIN }}
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      # read from env, never pasted into the script (no injection)
+      SCENARIO: ${{ inputs.scenario || 'none' }}
+      FROM_MONTH: ${{ inputs.from_month || '2019-01' }}
+      PER_MONTH: ${{ inputs.per_month || '20' }}
     steps:
-      - name: Check the server settings exist
+      - name: Check the settings exist
         run: |
-          for name in SKYSAT_SERVER SKYSAT_LOGIN; do
-            test -n "${!name}" || { echo "Missing secret $name: see docs/server.md (Traffic and drift check)"; exit 1; }
+          for name in SKYSAT_SERVER SKYSAT_LOGIN KAGGLE_API_TOKEN; do
+            test -n "${!name}" || { echo "Missing secret $name: see docs/server.md (The automatic loop)"; exit 1; }
           done
 
       - uses: actions/checkout@v4
@@ -58,10 +68,10 @@ jobs:
         run: pip install -r requirements.txt kaggle==2.2.4
 
       - name: Download the dataset
-        run: kaggle datasets download teejmahal20/airline-passenger-satisfaction -p data --unzip
+        run: kaggle datasets download joelljungstrom/128k-airline-reviews -p data/reviews --unzip
 
-      - name: Prepare the data (step 2)
-        run: python -m training.prepare_data
-
-      - name: Send passengers to the server
-        run: python -m simulator.simulate generate --mode "$MODE" --n "$N" --seed "$GITHUB_RUN_NUMBER" --url "https://$SKYSAT_SERVER/predict"
+      - name: Send the reviews to the server
+        run: |
+          export API_USER="${SKYSAT_LOGIN%%:*}" API_PASSWORD="${SKYSAT_LOGIN#*:}"
+          python -m simulator.replay --url "https://$SKYSAT_SERVER/score" --scenario "$SCENARIO" \
+            --from "$FROM_MONTH" --months 1 --per-month "$PER_MONTH" --seed "$GITHUB_RUN_NUMBER"

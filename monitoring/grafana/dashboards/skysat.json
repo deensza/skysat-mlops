@@ -1,12 +1,12 @@
 {
   "uid": "skysat",
-  "title": "SkySat – model in production",
+  "title": "SkySat – complaint box in production",
   "tags": [
     "skysat"
   ],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "editable": true,
   "refresh": "1m",
   "time": {
@@ -18,7 +18,7 @@
       "id": 1,
       "type": "stat",
       "title": "Serving model version",
-      "description": "Registry version of skysat-satisfaction@champion that answered the latest request",
+      "description": "Registry version of skysat-reviews@champion that answered the latest request",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "skysat-pg"
@@ -39,7 +39,7 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT model_version::int AS \"version\" FROM predictions ORDER BY created_at DESC LIMIT 1"
+          "rawSql": "SELECT CASE WHEN model_version ~ '^[0-9]+$' THEN model_version::int END AS \"version\" FROM llm_scores ORDER BY created_at DESC LIMIT 1"
         }
       ],
       "fieldConfig": {
@@ -64,8 +64,8 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "Predictions",
-      "description": "Requests to POST /predict in the selected time range",
+      "title": "Requests",
+      "description": "Requests to POST /score in the selected time range",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "skysat-pg"
@@ -86,7 +86,7 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT count(*) AS \"predictions\" FROM predictions WHERE $__timeFilter(created_at)"
+          "rawSql": "SELECT count(*) AS \"requests\" FROM llm_scores WHERE $__timeFilter(created_at)"
         }
       ],
       "fieldConfig": {
@@ -109,8 +109,8 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "With real answer",
-      "description": "Share of predictions whose real answer arrived through POST /feedback",
+      "title": "Live MAE",
+      "description": "Mean absolute error of the score where the true score was sent (a malformed score counts 9). Gate limit: 1.0",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "skysat-pg"
@@ -131,13 +131,12 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT 100.0 * count(actual) / NULLIF(count(*), 0) AS \"labelled\" FROM predictions WHERE $__timeFilter(created_at)"
+          "rawSql": "SELECT avg(CASE WHEN true_score IS NULL THEN NULL WHEN score IS NULL THEN 9 ELSE abs(score - true_score) END) AS \"MAE\" FROM llm_scores WHERE $__timeFilter(created_at)"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percent",
-          "decimals": 1
+          "decimals": 2
         },
         "overrides": []
       },
@@ -157,8 +156,8 @@
     {
       "id": 4,
       "type": "stat",
-      "title": "Accuracy",
-      "description": "Correct predictions among those with a real answer (time range)",
+      "title": "Live recommended accuracy",
+      "description": "Share of right yes/no where the true answer was sent. Gate limit: 0.90",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "skysat-pg"
@@ -179,13 +178,13 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT 100.0 * avg((predicted = actual)::int) AS \"accuracy\" FROM predictions WHERE actual IS NOT NULL AND $__timeFilter(created_at)"
+          "rawSql": "SELECT avg(CASE WHEN true_recommended IS NULL THEN NULL WHEN recommended = true_recommended THEN 1.0 ELSE 0.0 END) AS \"recommended accuracy\" FROM llm_scores WHERE $__timeFilter(created_at)"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percent",
-          "decimals": 1
+          "decimals": 3,
+          "unit": "percentunit"
         },
         "overrides": []
       },
@@ -205,8 +204,8 @@
     {
       "id": 5,
       "type": "stat",
-      "title": "ROC AUC",
-      "description": "Computed in SQL from the ranks of the predicted probabilities (Mann-Whitney)",
+      "title": "With true labels",
+      "description": "Requests that came with the real score: the live measures are computed on these",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "skysat-pg"
@@ -227,13 +226,11 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "-- average rank for tied probabilities (rank() alone gives ties the lowest rank and biases AUC)\nWITH l AS (SELECT actual, rank() OVER (ORDER BY probability) + (count(*) OVER (PARTITION BY probability) - 1) / 2.0 AS r FROM predictions WHERE actual IS NOT NULL AND $__timeFilter(created_at))\nSELECT (sum(r) FILTER (WHERE actual = 1) - count(*) FILTER (WHERE actual = 1) * (count(*) FILTER (WHERE actual = 1) + 1) / 2.0) / NULLIF(count(*) FILTER (WHERE actual = 1) * count(*) FILTER (WHERE actual = 0), 0) AS \"AUC\" FROM l"
+          "rawSql": "SELECT count(true_score) AS \"labelled\" FROM llm_scores WHERE $__timeFilter(created_at)"
         }
       ],
       "fieldConfig": {
-        "defaults": {
-          "decimals": 3
-        },
+        "defaults": {},
         "overrides": []
       },
       "options": {
@@ -252,8 +249,8 @@
     {
       "id": 6,
       "type": "timeseries",
-      "title": "Requests per 30 s, by API copy",
-      "description": "One line per API container: Nginx spreads the load round-robin",
+      "title": "Requests per hour",
+      "description": "POST /score answers per hour",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "skysat-pg"
@@ -274,17 +271,19 @@
           "format": "time_series",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT $__timeGroupAlias(created_at, '30s', 0), replica AS metric, count(*) AS value\nFROM predictions WHERE $__timeFilter(created_at) GROUP BY 1, 2 ORDER BY 1"
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '1h'), count(*) AS \"requests\"\nFROM llm_scores WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
         }
       ],
       "fieldConfig": {
         "defaults": {
+          "decimals": 0,
           "custom": {
             "lineWidth": 2,
-            "fillOpacity": 10,
+            "fillOpacity": 60,
             "showPoints": "never",
             "spanNulls": false,
-            "insertNulls": 60000
+            "insertNulls": 7200000,
+            "drawStyle": "bars"
           }
         },
         "overrides": []
@@ -302,8 +301,8 @@
     {
       "id": 7,
       "type": "timeseries",
-      "title": "Model latency inside the API",
-      "description": "Time spent in the API per prediction (k6 measures the full round trip)",
+      "title": "Latency p50 / p95",
+      "description": "Time spent generating one answer on CPU, per hour",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "skysat-pg"
@@ -324,7 +323,7 @@
           "format": "time_series",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT $__timeGroupAlias(created_at, '30s', NULL),\n  percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS \"p50\",\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS \"p95\"\nFROM predictions WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '1h'),\n  percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS \"p50\",\n  percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS \"p95\"\nFROM llm_scores WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
         }
       ],
       "fieldConfig": {
@@ -335,7 +334,7 @@
             "fillOpacity": 10,
             "showPoints": "never",
             "spanNulls": false,
-            "insertNulls": 60000
+            "insertNulls": 7200000
           }
         },
         "overrides": []
@@ -353,8 +352,8 @@
     {
       "id": 8,
       "type": "timeseries",
-      "title": "Accuracy and ROC AUC over time",
-      "description": "Drops when the winter-storm drift starts, recovers after retraining (step 7)",
+      "title": "Live MAE per hour",
+      "description": "Mean absolute score error where the true score is known. Red line: the gate limit (1.0)",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "skysat-pg"
@@ -375,31 +374,35 @@
           "format": "time_series",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT $__timeGroupAlias(created_at, '30s', NULL), avg((predicted = actual)::int) AS \"accuracy\"\nFROM predictions WHERE actual IS NOT NULL AND $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "skysat-pg"
-          },
-          "format": "time_series",
-          "rawQuery": true,
-          "editorMode": "code",
-          "rawSql": "WITH l AS (\n  SELECT $__timeGroup(created_at, '30s') AS time, actual,\n    rank() OVER (PARTITION BY $__timeGroup(created_at, '30s') ORDER BY probability)\n    + (count(*) OVER (PARTITION BY $__timeGroup(created_at, '30s'), probability) - 1) / 2.0 AS r\n  FROM predictions WHERE actual IS NOT NULL AND $__timeFilter(created_at))\nSELECT time, (sum(r) FILTER (WHERE actual = 1) - count(*) FILTER (WHERE actual = 1) * (count(*) FILTER (WHERE actual = 1) + 1) / 2.0) / NULLIF(count(*) FILTER (WHERE actual = 1) * count(*) FILTER (WHERE actual = 0), 0) AS \"ROC AUC\" FROM l GROUP BY time ORDER BY time"
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '1h'), avg(CASE WHEN true_score IS NULL THEN NULL WHEN score IS NULL THEN 9 ELSE abs(score - true_score) END) AS \"MAE\"\nFROM llm_scores WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "min": 0.8,
-          "max": 1,
-          "decimals": 3,
+          "min": 0,
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1.0
+              }
+            ]
+          },
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 10,
             "showPoints": "never",
             "spanNulls": false,
-            "insertNulls": 60000
+            "insertNulls": 7200000,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
           }
         },
         "overrides": []
@@ -417,8 +420,8 @@
     {
       "id": 9,
       "type": "timeseries",
-      "title": "Satisfied passengers: predicted vs real",
-      "description": "Share of passengers predicted satisfied, and the real share from feedback",
+      "title": "Live recommended accuracy per hour",
+      "description": "Share of right yes/no where the true answer is known. Red line: the gate limit (0.90; below it is red)",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "skysat-pg"
@@ -439,20 +442,36 @@
           "format": "time_series",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT $__timeGroupAlias(created_at, '30s', NULL), avg(predicted) AS \"predicted\", avg(actual) AS \"real\"\nFROM predictions WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '1h'), avg(CASE WHEN true_recommended IS NULL THEN NULL WHEN recommended = true_recommended THEN 1.0 ELSE 0.0 END) AS \"recommended accuracy\"\nFROM llm_scores WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
           "min": 0,
           "max": 1,
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0.9
+              }
+            ]
+          },
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 10,
             "showPoints": "never",
             "spanNulls": false,
-            "insertNulls": 60000
+            "insertNulls": 7200000,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
           }
         },
         "overrides": []
@@ -470,8 +489,8 @@
     {
       "id": 10,
       "type": "timeseries",
-      "title": "Model version serving",
-      "description": "Steps up when a retrained model becomes champion and the API copies reload it",
+      "title": "Complaint shares",
+      "description": "Share of the model's answers per main complaint, per hour (malformed = the answer could not be read)",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "skysat-pg"
@@ -479,8 +498,8 @@
       "gridPos": {
         "x": 0,
         "y": 20,
-        "w": 24,
-        "h": 6
+        "w": 12,
+        "h": 8
       },
       "targets": [
         {
@@ -492,7 +511,64 @@
           "format": "time_series",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "SELECT $__timeGroupAlias(created_at, '30s', NULL), max(model_version::int) AS \"version\"\nFROM predictions WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
+          "rawSql": "SELECT time, complaint AS metric, n::float / sum(n) OVER (PARTITION BY time) AS value FROM (\n  SELECT $__timeGroup(created_at, '1h') AS time, coalesce(complaint, 'malformed') AS complaint, count(*) AS n\n  FROM llm_scores WHERE $__timeFilter(created_at) GROUP BY 1, 2) t ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "showPoints": "never",
+            "spanNulls": false,
+            "insertNulls": 7200000,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Model version serving",
+      "description": "Steps up when a retrained adapter becomes champion and the API loads it",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "skysat-pg"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "skysat-pg"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '1h', NULL), max(CASE WHEN model_version ~ '^[0-9]+$' THEN model_version::int END) AS \"version\"\nFROM llm_scores WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
         }
       ],
       "fieldConfig": {
@@ -503,8 +579,7 @@
             "fillOpacity": 10,
             "showPoints": "never",
             "spanNulls": false,
-            "insertNulls": 60000,
-            "drawStyle": "line",
+            "insertNulls": 7200000,
             "lineInterpolation": "stepAfter"
           }
         },
