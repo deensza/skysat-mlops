@@ -1,93 +1,55 @@
-# Common commands for SkySat. Run `make help` to list them.
+# Common commands for SkySat, the complaint box (docs/llm.md). Run `make help` to list them.
 #
-#   make install        one-time: create .venv with the pinned packages (same as CI)
-#   make install-train  one-time: add PyTorch for training
-#   make data           step 2: clean + split the Kaggle files in data/
-#   make train          step 3a: train the model -> artifacts/model.pt
-#   make compare        compare the MLP with logistic regression and gradient boosting
-#   make graph          plot which features drive satisfaction -> artifacts/eda/*.png
-#   make add-ct ARGS=.. step 8: train on GitHub, e.g. ARGS="--model random_forest" or ARGS=--all (8 models)
-#   make list-ct        step 8: recent CT runs on GitHub (results: the shared MLflow)
-#   make ct-local ARGS= step 8: the same training on this computer
-#   make smoke          step 8: smoke-test the running stack (what CD runs after a deploy)
-#   make submission     competition: 5-fold CV + artifacts/kaggle/submission.csv (stays on this PC)
-#   make submit MSG=..  competition: upload it to Kaggle;  make kaggle-scores: your public scores
-#   make d-up / d-down  start / stop the Docker stack (data is kept);  make d-ps: what is running
-#   make d-build        rebuild the images from the current code and restart what changed
-#   make d-logs         follow the logs (one service: make d-logs SERVICE=api)
-#   make test           run the tests
-#   make ci             run the same checks as the GitHub Actions workflow
+#   make install        one-time: .venv with the pinned packages for the tests (no GPU, no torch)
+#   make test           run the tests;   make ci: the checks GitHub Actions runs
+#   make llm-install    one-time: .venv-llm with CUDA PyTorch, transformers, peft (NVIDIA GPU)
+#   make llm-cycle      the whole lifecycle on this PC: train v1, see it fail under drift, retrain v2
+#   make d-up / d-down  start / stop the Docker stack (the API, MLflow, PostgreSQL, Nginx, Grafana)
 
 # Python 3.12 is what CI uses; override if needed: make install PYTHON=3.13
 PYTHON ?= 3.12
 # Use the project's .venv when it exists, else whatever python3 is on the PATH
 PY := $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
-KAGGLE := $(if $(wildcard .venv/bin/kaggle),.venv/bin/kaggle,kaggle)
 # Settings from .env (e.g. the team's shared MLflow, see .env.example) reach every command below
 -include .env
 export MLFLOW_TRACKING_URI MLFLOW_TRACKING_USERNAME MLFLOW_TRACKING_PASSWORD
+export HF_HUB_OFFLINE
 
-.PHONY: help install install-train data data-card train compare graph add-ct list-ct ct-local submission submit kaggle-scores smoke d-up d-build d-down d-ps d-logs d-loadtest d-wipe test compose-check ci
+# The llm-train / llm-eval / llm-cycle / llm-serve commands use a local MLflow (sqlite), so a trial never touches the
+# team's registry, whatever .env says. SHARED=yes: use the MLflow from .env instead (a new champion there is picked
+# up by the server). The docker targets are not affected: they read .env themselves.
+SHARED ?= no
+LLM_MLFLOW ?= sqlite:///artifacts/llm-runs/mlflow.db
+LLM_ENV := $(if $(filter yes,$(SHARED)),,env -u MLFLOW_TRACKING_USERNAME -u MLFLOW_TRACKING_PASSWORD MLFLOW_TRACKING_URI=$(LLM_MLFLOW))
+
+.PHONY: help install test compose-check ci smoke d-up d-build d-down d-ps d-logs d-loadtest d-wipe \
+	llm-install llm-train llm-eval llm-serve llm-up llm-replay llm-drift llm-cycle
 
 help:
 	@awk -F ':.*## ' '/^[a-z-]+:.*## /{printf "%-16s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-install: ## create .venv and install the pinned packages (what CI installs)
+install: ## create .venv with the pinned packages for the tests and the replay (what CI installs)
 	uv venv --python $(PYTHON) .venv
 	uv pip install --python .venv/bin/python -r requirements.txt pytest==8.3.3
 
-install-train: ## add PyTorch, the Kaggle CLI and psycopg to .venv (training, retraining, competition)
-	uv pip install --python .venv/bin/python -r requirements-train.txt
+test: ## run pytest
+	$(PY) -m pytest -v
 
-data: ## step 2: clean and split data/train.csv + test.csv into data/processed/
-	$(PY) -m training.prepare_data
+compose-check: ## validate docker-compose.yml (all profiles)
+	docker compose --profile loadtest config --quiet
 
-data-card: ## describe every dataset (rows, schema, satisfied share, sha256; no rows) and log it to MLflow (skysat-data)
-	$(PY) -m training.data_card $(ARGS)
+ci: test compose-check ## the same two checks as the GitHub Actions workflow
 
-train: ## step 3a: train on data/processed, write artifacts/model.pt
-	$(PY) -m training.train
+smoke: ## /health + POST /score through Nginx on localhost:8080 (needs a champion adapter)
+	bash .github/scripts/smoke-test.sh http://localhost:8080
 
-compare: ## compare the MLP with logistic regression and gradient boosting (3 seeds)
-	$(PY) -m training.compare
-
-graph: ## plot feature weights and relationships from the competition zip -> artifacts/eda/
-	$(PY) -m training.analysis.eda
-
-# Continuous training (step 8) runs on GitHub's servers (.github/workflows/ct.yml); results in the shared MLflow.
-# CT_REF: the branch whose code trains (the workflow must exist there): make add-ct CT_REF=ml ARGS=--all
-CT_REF ?= main
-
-add-ct: ## step 8: train on GitHub: make add-ct ARGS="--model random_forest"  (ARGS=--all: the 8 candidates)
-	gh workflow run ct.yml --ref $(CT_REF) -f args="$(ARGS)"
-	@echo "Queued on GitHub. Follow it: make list-ct   Results: the shared MLflow (runs, versions, champion)"
-
-list-ct: ## step 8: recent CT runs on GitHub
-	gh run list --workflow ct.yml --limit 10
-
-ct-local: ## step 8: the same training on this computer (needs make data): make ct-local ARGS="--model mlp"
-	$(PY) -m training.ct $(ARGS)
-
-# Kaggle competition track (training/competition.py). The competition data stays on this PC: never on GitHub.
-COMPETITION := playground-series-s6e10
-
-submission: ## competition: 5-fold CV + artifacts/kaggle/submission.csv (needs data/playground-series-s6e10.zip)
-	$(PY) -m training.competition $(ARGS)
-
-submit: ## competition: upload the submission: make submit MSG="what changed" (needs your Kaggle token)
-	@test -n "$(MSG)" || { echo 'Say what this submission is: make submit MSG="hgb, 127 leaves"'; exit 1; }
-	$(KAGGLE) competitions submit -c $(COMPETITION) -f artifacts/kaggle/submission.csv -m "$(MSG)"
-
-kaggle-scores: ## competition: your team's submissions and their public leaderboard scores
-	$(KAGGLE) competitions submissions -c $(COMPETITION)
-
-# Docker stack (docker-compose.yml): MLflow, PostgreSQL, 3 API copies, Nginx, Grafana
+# Docker stack (docker-compose.yml): the API (the LLM), MLflow, PostgreSQL, Nginx, Grafana
 SERVICE ?=
 
 d-up: ## docker: start everything in the background (after editing .env too: changed settings are applied)
 	docker compose up -d
 
-d-build: ## docker: rebuild images from the current code and restart what changed (after editing api/, skysat/, training/train.py)
+d-build: ## docker: rebuild the API image from the current code and restart what changed
 	docker compose up -d --build
 
 d-down: ## docker: stop everything cleanly; all data is kept (use this, not `docker compose kill`)
@@ -99,32 +61,52 @@ d-ps: ## docker: what is running, and is it healthy
 d-logs: ## docker: follow the logs, Ctrl+C to stop (one service: make d-logs SERVICE=api)
 	docker compose logs -f --tail 50 $(SERVICE)
 
-d-loadtest: ## docker: k6 load test, 50 users for 30 s against POST /predict (step 5)
+d-loadtest: ## docker: gentle k6 load test (1 user, 1 min) against POST /score
 	docker compose --profile loadtest run --rm --no-deps k6
 
-d-wipe: ## docker: stop and DELETE the local data (prediction log, local MLflow, Grafana); asks first
-	@printf "Delete ALL local Docker data: prediction log, local MLflow models, Grafana? [y/N] "; read answer; \
+d-wipe: ## docker: stop and DELETE the local data (prediction log, local MLflow, model cache, Grafana); asks first
+	@printf "Delete ALL local Docker data: prediction log, local MLflow models, the 3 GB base model, Grafana? [y/N] "; read answer; \
 	if [ "$$answer" = y ]; then docker compose down -v; else echo "Nothing deleted."; fi
 
-smoke: ## step 8: /health + /predict through Nginx on localhost:8080
-	bash .github/scripts/smoke-test.sh http://localhost:8080
+# The complaint-box LLM (llm/, docs/llm.md): LoRA on a GPU, here (.venv-llm) or on Colab (notebooks/)
+LLM_PY := .venv-llm/bin/python
+LLM_SPLIT ?= train
+SCENARIO ?= none
+SCENARIO_ARG := $(if $(filter-out none,$(SCENARIO)),--scenario $(SCENARIO),)
+URL ?= http://localhost:8080
+FROM ?= 2019-01
+MONTHS ?= 3
+PER_MONTH ?= 50
 
-test: ## run pytest
-	$(PY) -m pytest -v
+llm-install: ## LLM: .venv-llm with CUDA PyTorch + transformers/peft (needs an NVIDIA GPU; ~5 GB)
+	uv venv --python $(PYTHON) .venv-llm
+	uv pip install --python $(LLM_PY) torch==2.14.1 numpy==2.1.3 pandas==2.2.3 -r requirements-llm.txt
 
-compose-check: ## validate docker-compose.yml (all profiles)
-	docker compose --profile loadtest config --quiet
+llm-train: ## LLM: LoRA-tune, gate, log, register: make llm-train LLM_SPLIT=live-2019 SCENARIO=harsh (ARGS=--no-mlflow: log nothing)
+	@mkdir -p artifacts/llm-runs
+	$(LLM_ENV) $(LLM_PY) -m llm.train_lora --split $(LLM_SPLIT) $(SCENARIO_ARG) $(ARGS)
 
-ci: test compose-check ## same two checks as the GitHub Actions workflow
+llm-eval: ## LLM: score the champion on LLM_SPLIT (and SCENARIO): make llm-eval LLM_SPLIT=live-2019 SCENARIO=harsh
+	@mkdir -p artifacts/llm-runs
+	$(LLM_ENV) $(LLM_PY) -m llm.train_lora --eval-only --split $(LLM_SPLIT) $(SCENARIO_ARG) $(ARGS)
 
-# Steps 6-7 from make (also the step 9 demo, see demo/README.md): send traffic to the running stack, then retrain
-.PHONY: simulate retrain
-MODE ?= normal
-N ?= 2000
-SEED ?= 0
+# A local adapter (artifacts/llm/adapter, from make llm-train ARGS=--no-mlflow) is served when it exists, else the
+# MLflow champion. CPU only, like the server: CUDA_VISIBLE_DEVICES is emptied.
+LLM_ADAPTER_DIR ?= $(if $(wildcard artifacts/llm/adapter/skysat_llm.json),artifacts/llm/adapter,)
+llm-serve: ## LLM: the API on http://localhost:8090 (POST /score, /docs), CPU, from .venv-llm, no database
+	$(LLM_ENV) CUDA_VISIBLE_DEVICES= LLM_ADAPTER_DIR=$(LLM_ADAPTER_DIR) $(LLM_PY) -m uvicorn llm.serve:app --host 127.0.0.1 --port 8090
 
-simulate: ## steps 6-7: send passengers to the API on :8080: make simulate MODE=drift N=2000 SEED=2
-	$(PY) -m simulator.simulate generate --mode $(MODE) --n $(N) --seed $(SEED) --url http://localhost:8080/predict
+llm-up: ## LLM: build and start the whole Docker stack (same as d-up with a rebuild; the API is at :8080/score)
+	docker compose up -d --build
 
-retrain: ## step 7: drift check, retrain, promote if better (uses MLFLOW_* from .env!); ARGS=--check-only to only measure
-	$(PY) -m training.retrain $(ARGS)
+llm-replay: ## LLM: send live reviews with their true labels: make llm-replay URL=.. SCENARIO=harsh FROM=2019-01 MONTHS=3 PER_MONTH=50
+	$(PY) -m simulator.replay --url $(URL)/score --scenario $(SCENARIO) --from $(FROM) --months $(MONTHS) --per-month $(PER_MONTH)
+
+llm-drift: ## LLM: drift check on the last 24 h of the server's log: make llm-drift URL=http://localhost:8080
+	$(PY) -m llm.drift_check --url $(URL) $(ARGS)
+
+llm-cycle: ## LLM: train v1 on <= 2018, score it on harsh 2019 (fails the gate), retrain v2 on harsh 2019 (promoted)
+	@mkdir -p artifacts/llm-runs
+	$(LLM_ENV) $(LLM_PY) -m llm.train_lora --split train
+	$(LLM_ENV) $(LLM_PY) -m llm.train_lora --eval-only --split live-2019 --scenario harsh
+	$(LLM_ENV) $(LLM_PY) -m llm.train_lora --split live-2019 --scenario harsh

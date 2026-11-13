@@ -1,0 +1,8 @@
+# Complaint-box LLM training (llm/train_lora.py) on a GPU: Colab, or a local NVIDIA card.
+# PyTorch is not pinned here: Colab already has a CUDA build. Locally (Linux), plain PyPI's torch is the CUDA build:
+#   uv venv --python 3.12 .venv-llm && uv pip install --python .venv-llm/bin/python torch==2.14.1 -r requirements-llm.txt
+# numpy/pandas are not pinned either, so Colab's own versions are kept.
+transformers==5.20.2  # Apache-2.0
+peft==0.21.2          # Apache-2.0
+mlflow==3.17.1
+nlpaug==1.1.11  # MIT

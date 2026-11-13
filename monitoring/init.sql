@@ -1,17 +1,17 @@
--- Step 6 – Prediction log. Runs once, when the PostgreSQL volume is created.
--- Every POST /predict adds a row; the real answer (actual) arrives later through POST /feedback.
-CREATE TABLE predictions (
-    prediction_id  uuid PRIMARY KEY,
-    created_at     timestamptz      NOT NULL DEFAULT now(),
-    passenger_id   bigint           NOT NULL,
-    features       jsonb            NOT NULL,  -- the 22 model inputs, used for drift checks (step 7)
-    probability    double precision NOT NULL,
-    predicted      smallint         NOT NULL,  -- 1 = satisfied
-    actual         smallint,                   -- NULL until feedback arrives
-    labelled_at    timestamptz,
-    model_version  text             NOT NULL,
-    replica        text             NOT NULL,  -- which API copy answered
-    latency_ms     double precision NOT NULL   -- time spent inside the API for this prediction
+-- Prediction log of the complaint box. Runs once, when the PostgreSQL volume is created.
+-- llm/serve.py adds one row per POST /score (and creates this table itself if the volume is older).
+-- Only numbers and fixed labels: never the review, the title or the airline (the dataset is not ours to store).
+-- true_score / true_recommended are filled when the caller (the replay) knows the real answer.
+CREATE TABLE IF NOT EXISTS llm_scores (
+    id                bigserial PRIMARY KEY,
+    created_at        timestamptz NOT NULL DEFAULT now(),
+    model_version     text,
+    latency_ms        integer,
+    score             integer,   -- NULL: the model's answer was malformed
+    recommended       text,
+    complaint         text,
+    true_score        integer,
+    true_recommended  text
 );
 
-CREATE INDEX predictions_created_at ON predictions (created_at);
+CREATE INDEX IF NOT EXISTS llm_scores_created_at ON llm_scores (created_at);

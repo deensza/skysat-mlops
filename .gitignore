@@ -2,16 +2,17 @@
 __pycache__/
 *.py[cod]
 .venv/
+.venv-llm/
 venv/
 .pytest_cache/
 .ipynb_checkpoints/
 
-# Data (downloaded from Kaggle, not committed: size + license)
+# Data (the airline reviews, downloaded from Kaggle, not committed: licence + size)
 data/*
 !data/.gitkeep
 !data/README.md
 
-# Safety net: tabular data anywhere in the repo (competition data must not be redistributed)
+# Safety net: data files anywhere in the repo (the review dataset must not be redistributed)
 *.csv
 *.parquet
 

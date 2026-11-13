@@ -18,25 +18,27 @@ services:
     volumes:
       - mlflow-data:/mlflow
 
-  # Prediction API (step 4), 3 copies behind Nginx (step 5). Not published directly:
-  # use http://localhost:8080 (Swagger: /docs). Change the number: docker compose up -d --scale api=1
+  # The complaint-box API (llm/serve.py, docs/llm.md): the only model. Not published directly: use
+  # http://localhost:8080 (POST /score, Swagger: /docs). CPU only: a review takes seconds, one at a time.
+  # The base model (~3 GB) is downloaded at the first start into the llm-models volume; the adapter
+  # (skysat-reviews@champion) comes from MLflow. Until a champion exists (make llm-train) /health answers 503.
   api:
-    # CD (step 8) sets API_IMAGE to the image CI pushed to ghcr.io; locally the image is built from source
+    # CD sets API_IMAGE to the image CI pushed to ghcr.io; locally the image is built from source
     image: ${API_IMAGE:-skysat-api:local}
     build:
       context: .
-      dockerfile: api/Dockerfile
-      args:
-        TORCH_INDEX: ${TORCH_INDEX:-https://download.pytorch.org/whl/cpu}
+      dockerfile: llm/Dockerfile
     environment:
-      # Step 8: the team's shared MLflow (DagsHub) when it is set in .env, else the local one below
+      # The team's shared MLflow (DagsHub) when it is set in .env, else the local one below
       MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow:5000}
       MLFLOW_TRACKING_USERNAME: ${MLFLOW_TRACKING_USERNAME:-}
       MLFLOW_TRACKING_PASSWORD: ${MLFLOW_TRACKING_PASSWORD:-}
-      MODEL_RELOAD_SECONDS: ${MODEL_RELOAD_SECONDS:-10}
+      MODEL_RELOAD_SECONDS: ${MODEL_RELOAD_SECONDS:-300}
+      LLM_DTYPE: ${LLM_DTYPE:-bfloat16}
       DATABASE_URL: postgresql://skysat:${POSTGRES_PASSWORD:-skysat}@postgres:5432/skysat
-    deploy:
-      replicas: 3
+    volumes:
+      - llm-models:/models
+    mem_limit: 8g
     depends_on:
       mlflow:
         condition: service_started
@@ -44,11 +46,12 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 600s  # the first start downloads the 3 GB base model
 
-  # Load balancer (step 5): http://localhost:8080
+  # Gateway: http://localhost:8080
   nginx:
     image: nginx:1.30.6-alpine
     volumes:
@@ -57,19 +60,19 @@ services:
       - "8080:80"
     depends_on:
       api:
-        condition: service_started  # not healthy: on a fresh start there is no champion yet (API answers 503)
+        condition: service_started  # not healthy: the first start downloads the base model, and there may be no champion yet
 
-  # Load test (step 5), only on demand: docker compose --profile loadtest run --rm --no-deps k6
+  # Load test, only on demand (a few reviews a minute: the model is slow on CPU): docker compose --profile loadtest run --rm --no-deps k6
   k6:
     image: grafana/k6:1.8.1
     profiles: ["loadtest"]
     volumes:
       - ./loadtest:/scripts:ro
-    command: ["run", "/scripts/predict.js"]
+    command: ["run", "/scripts/score.js"]
     depends_on:
       - nginx
 
-  # Prediction log (step 6). Port 5432 is published for training/retrain.py on the host.
+  # Prediction log (table llm_scores, monitoring/init.sql). Port 5432 is published for debugging on the host.
   postgres:
     image: postgres:17.11-alpine
     environment:
@@ -87,7 +90,7 @@ services:
       timeout: 3s
       retries: 20
 
-  # Dashboards (step 6): http://localhost:3000 (opens without login, read-only; admin / admin to edit)
+  # Dashboards: http://localhost:3000 (opens without login, read-only; admin / admin to edit)
   grafana:
     image: grafana/grafana:12.4.13
     environment:
@@ -109,3 +112,4 @@ services:
 volumes:
   mlflow-data:
   postgres-data:
+  llm-models:

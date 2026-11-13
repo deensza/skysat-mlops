@@ -1,17 +1,22 @@
 # data/
 
-Dataset files are **not** committed to Git (size and license).
+Dataset files are **not** committed to Git (licence and size). `data/*` is in `.gitignore` and `.dockerignore`, so the
+data cannot reach Git or a Docker image by accident. It is not on DagsHub either: no dataset row, review text or prompt
+is ever logged to MLflow, and the prediction log in PostgreSQL holds numbers only.
 
-They are not on DagsHub either: the competition data may only go to participants and the original dataset's licence does not allow redistribution. `make data-card` logs a data card instead (experiment `skysat-data`): per file the source, licence, rows, schema, satisfied share and sha256, so a downloaded copy can be checked with `sha256sum` against the one the models were trained on.
+**Source:** [Airline Reviews (128k)](https://www.kaggle.com/datasets/joelljungstrom/128k-airline-reviews) by joelljungstrom
+on Kaggle, licence DbCL-1.0. The reviews were scraped from airlinequality.com by the dataset's author.
 
-1. Open https://www.kaggle.com/datasets/teejmahal20/airline-passenger-satisfaction (a free Kaggle account is needed).
-2. Click **Download**, unzip the archive.
-3. Copy `train.csv` and `test.csv` into this folder:
+```bash
+kaggle datasets download joelljungstrom/128k-airline-reviews -p data/reviews --unzip   # needs a free Kaggle account/token
+```
 
 ```
 data/
-├── train.csv   (103,904 passengers)
-└── test.csv    (25,976 passengers)
+└── reviews/
+    └── AirlineReviews.csv
 ```
 
-`python -m training.prepare_data` then writes the clean files to `data/processed/`.
+`llm/reviews.py` cleans it (review present, score 1-10, parseable flight date, recommended yes/no) and splits it by
+date and airline (see [docs/llm.md](../docs/llm.md)). Only `simulator/replay.py` sends review text anywhere, and only
+to the API URL you give it.
