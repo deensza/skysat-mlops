@@ -77,6 +77,13 @@ make llm-train                                # v2 from the newest reviews; prom
 `make llm-train` uses a local sqlite MLflow unless `SHARED=yes`. Docker: `make d-ps`, `d-logs`, `d-build`,
 `d-down` (data kept), `d-wipe` (deletes local data, asks first).
 
+## MLOps level
+
+By Google's three levels (manual, ML pipeline automation, CI/CD pipeline automation), SkySat is built to level 2: tests,
+image and deploy with rollback, and a drift alarm that starts the training workflow. The loop is built but not yet
+switched on (the repository owner adds the secrets and variables) and has not run on GitHub yet. What a real level 2
+system has that this one does not: [docs/architecture.md](docs/architecture.md#mlops-level).
+
 ## Pipeline
 
 | Stage | Where |
@@ -85,8 +92,8 @@ make llm-train                                # v2 from the newest reviews; prom
 | Train + gate + register | `llm/trainer.py` on a RunPod GPU (`llm/runpod_pod.py`) or this PC; MLflow experiment `skysat-llm`, model `skysat-reviews`, alias `champion` |
 | Serve | `api` service (`llm/serve.py`, CPU, 8 GB), behind Nginx: `/score`, `/model`, `/health`, `/docs` |
 | Monitor | `llm_scores` table → Grafana; `GET /scores/recent?hours=N` returns aggregates only |
-| Drift | `llm/drift_check.py`: DRIFT if live MAE > 1.0 or recommended accuracy < 0.90 by more than the sampling noise, on >= 100 labelled requests |
-| CI/CD | `ci.yml`: tests, compose check, image build, deploy (main only, if switched on) |
-| Retrain | `make train-remote`, or the intake by itself with `AUTO_TRAIN=1`. GitHub has no GPU |
+| Drift | `llm/drift_check.py`: DRIFT if the live MAE of the serving model > 1.0 or its recommended accuracy < 0.90 by more than the sampling noise, on >= 100 labelled requests |
+| CI/CD | `ci.yml`: tests (including `tests/test_pipeline.py`), `nginx -t`, compose check, image build, deploy on main only, if switched on, with a rollback to the running image if the smoke test fails |
+| Retrain | `train.yml`: started by `drift.yml` (only if `AUTO_RETRAIN` is `true`) or by hand; cooldown, needs >= 300 pending reviews, rents a RunPod GPU for at most 45 minutes, then checks no pod is left. Built, not yet switched on, not yet run on GitHub. Also `make train-remote` |
 
 See [docs/architecture.md](docs/architecture.md) for the picture and [docs/server.md](docs/server.md) for the always-on server.

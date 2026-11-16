@@ -73,10 +73,11 @@ def test_main_writes_github_output_and_exits_zero(monkeypatch, tmp_path, capsys)
     out = tmp_path / "out"
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
-    monkeypatch.setattr(drift_check, "fetch", lambda url, hours: summary(mae=1.18, n_score=150))
+    monkeypatch.setattr(drift_check, "fetch", lambda url, hours, version=None: summary(mae=1.18, n_score=150))
+    monkeypatch.setattr(drift_check, "serving_version", lambda url: "2")
     monkeypatch.setattr("sys.argv", ["drift_check", "--url", "http://x"])
     drift_check.main()  # returns normally: exit code 0
-    assert out.read_text() == "drift=true\n"
+    assert out.read_text() == "drift=true\nversion=2\n"
     assert "DRIFT" in capsys.readouterr().out
 
 
@@ -115,3 +116,86 @@ def test_fetch_sends_the_login(monkeypatch):
     monkeypatch.setattr(drift_check.urllib.request, "urlopen", fake_urlopen)
     assert drift_check.fetch("http://x/", 24) == {"count": 1}
     assert seen["url"] == "http://x/scores/recent?hours=24" and seen["auth"].startswith("Basic ")
+
+
+def fake_server(monkeypatch, answers):
+    """Fake urlopen: answers maps a path to a dict (or an exception to raise); returns the list of URLs asked."""
+    seen = []
+
+    class Resp:
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(self.body).encode()
+
+    def fake_urlopen(req, timeout):
+        seen.append(req.full_url)
+        body = answers[req.full_url.split("http://x")[1].split("?")[0]]
+        if isinstance(body, Exception):
+            raise body
+        return Resp(body)
+
+    monkeypatch.setattr(drift_check.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    return seen
+
+
+def test_main_judges_the_serving_version(monkeypatch, tmp_path, capsys):
+    out = tmp_path / "out"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    s = {**summary(), "version": "2", "model_versions": {"1": 300, "2": 57}}
+    seen = fake_server(monkeypatch, {"/model": {"version": 2}, "/scores/recent": s})
+    monkeypatch.setattr("sys.argv", ["drift_check", "--url", "http://x"])
+    drift_check.main()
+    assert seen == ["http://x/model", "http://x/scores/recent?hours=24&version=2"]
+    text = capsys.readouterr().out
+    assert "Last 24 h, model version 2 only: 120 requests" in text
+    assert "Versions in the window: 1 (300 requests), 2 (57 requests)" in text
+    assert "too old" not in text
+    assert out.read_text() == "drift=false\nversion=2\n"
+
+
+def test_all_versions_does_not_ask_for_the_model(monkeypatch, tmp_path, capsys):
+    out = tmp_path / "out"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    seen = fake_server(monkeypatch, {"/scores/recent": {**summary(), "version": None}})
+    monkeypatch.setattr("sys.argv", ["drift_check", "--url", "http://x", "--all-versions"])
+    drift_check.main()
+    assert seen == ["http://x/scores/recent?hours=24"]
+    text = capsys.readouterr().out
+    assert "Last 24 h: 120 requests" in text and "too old" not in text
+    assert out.read_text() == "drift=false\nversion=all\n"
+
+
+def test_failing_model_endpoint_fails_with_exit_code_2(monkeypatch, tmp_path, capsys):
+    out = tmp_path / "out"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    seen = fake_server(monkeypatch, {"/model": OSError("boom")})
+    monkeypatch.setattr("sys.argv", ["drift_check", "--url", "http://x"])
+    with pytest.raises(SystemExit) as err:
+        drift_check.main()
+    assert err.value.code == 2
+    assert capsys.readouterr().out.startswith("## Drift check: FAILED") and seen == ["http://x/model"]
+    assert not out.exists()
+
+
+def test_old_server_without_version_filter_is_reported(monkeypatch, capsys):
+    fake_server(monkeypatch, {"/model": {"version": "2"}, "/scores/recent": summary()})
+    monkeypatch.setattr("sys.argv", ["drift_check", "--url", "http://x"])
+    drift_check.main()
+    text = capsys.readouterr().out
+    assert "The server is too old to filter by version: all versions are counted." in text
+    assert "Last 24 h: 120 requests" in text
+
+
+def test_fetch_quotes_the_version(monkeypatch):
+    seen = fake_server(monkeypatch, {"/scores/recent": {"count": 1}})
+    drift_check.fetch("http://x", 6, version="a b")
+    assert seen == ["http://x/scores/recent?hours=6&version=a%20b"]

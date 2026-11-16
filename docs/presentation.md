@@ -15,9 +15,12 @@ What the assignment asks for, and where it is answered:
 Open points (tick when done):
 
 - [ ] Build the slides from this file (one `##` = one slide; speaker notes under each)
-- [ ] Re-measure the numbers on the final stack before presenting; the server numbers (slide 8) are not measured yet
+- [ ] Re-measure the numbers on the final stack before presenting; the server numbers (slide 8) are partly measured
+      (2026-11-16, docs/server.md), the restart time is not
 - [ ] Record the video ([demo/video.md](../demo/video.md)) and put its link on slide 10
-- [ ] Enable the schedule in `drift.yml` for the final run, and say so on slide 9
+- [ ] The repository owner adds the secrets and variables ([server.md](server.md#switching-it-on))
+- [ ] Run the loop once for real (drift.yml, then train.yml) and note the date on slide 9
+- [ ] Freeze it before presenting: `AUTO_RETRAIN` and `DEPLOY_TO_RUNNER` to `false` ([server.md](server.md))
 - [ ] Upload slides (with the GitHub link) and code to Moodle
 - [ ] Rehearse once with a timer (target: ~10 min slides + 3 min video + questions)
 
@@ -45,7 +48,7 @@ Open points (tick when done):
 - Same lifecycle: data, train, gate, register, promote, serve, monitor, retrain
 - Different: the 3 GB base model is **frozen**; we train a **17 MB LoRA adapter** (~0.3% of the weights), so a "new
   model" is a small download
-- Training needs a **GPU** (5 min on an RTX 4070) so it is not on GitHub; serving is on CPU and takes seconds per review
+- Training needs a **GPU** (5 min on an RTX 4070) so it is not on GitHub's machines (a workflow rents one); serving is on CPU and takes seconds per review
 
 ## 4. The lifecycle we built
 
@@ -58,12 +61,12 @@ Open points (tick when done):
 | Serving | **FastAPI** `POST /score`, behind **Nginx** |
 | Monitoring | **PostgreSQL** `llm_scores` + **Grafana** |
 | Drift | live MAE and recommended accuracy against the gate (`llm/drift_check.py`) |
-| CI / CD | **GitHub Actions**: tests, image, deploy; hourly replay and drift check |
+| CI / CD | **GitHub Actions**: tests, image, deploy; hourly drift check; a training workflow (built, not yet run) |
 
 ## 5. Architecture
 
 See the diagram in [architecture.md](architecture.md): GPU PC → MLflow (adapter) → API on CPU → PostgreSQL → Grafana;
-GitHub checks drift and opens an issue; a person retrains.
+GitHub checks drift and opens an issue; the Train workflow can rent the GPU (built, not yet switched on).
 
 > Notes: two loops: the training loop (GPU → MLflow) and the serving loop (traffic → API → log → Grafana). Drift
 > detection connects them. Monitoring stores numbers, never review text.
@@ -91,16 +94,34 @@ GitHub checks drift and opens an issue; a person retrains.
 ## 8. The server
 
 - One always-on VM (>= 8 GB RAM): Caddy (HTTPS), Nginx (rate limit, login), `api`, PostgreSQL, Grafana ([server.md](server.md))
-- Server measurements with the LLM: *(not measured yet: restart time, latency per review)*
+- Server measurements with the LLM (2026-11-16): a review takes about one minute in the live loop; restart time: *(not measured yet)*
 
 ## 9. CI / CD and the automatic loop
 
-- **CI**: tests (no GPU, no model), compose files valid, image built without any model download
-- **CD**: on `main` only, never for pull requests; image to ghcr.io, deploy on the server's runner once it is switched on
-- **Traffic** is the simulator run by hand (`make simulate`, optionally `SCENARIO=harsh`); **drift.yml** checks it and
-  opens the issue "Drift detected: retrain the LoRA adapter (make train-remote)". Schedule written, enabled for the
-  final run
-- **Retraining is not on GitHub**: no GPU. A person runs `make train-remote` (RunPod GPU) or `make llm-train` (local GPU)
+- **CI**: tests (no GPU, no model), `nginx -t` on both gateway configs, compose files valid, image built without any
+  model download; `tests/test_pipeline.py` runs the real trainer with a stub for the GPU step against a real PostgreSQL
+- **CD**: on `main` only, never for pull requests; image to ghcr.io, deploy on the server's runner once it is switched
+  on; if the smoke test fails it goes back to the running image (the image only)
+- **drift.yml** runs hourly, judges only the serving model, opens one issue on DRIFT and, only if `AUTO_RETRAIN` is
+  `true`, calls **train.yml**
+- **train.yml** has a cooldown (default 6 h), rents nothing if fewer than 300 reviews are pending, trains on the cheapest
+  free RunPod GPU for at most 45 minutes (at most about $0.17), then checks that no pod is left
+- Built, but **not yet switched on** (the repository owner adds the secrets) and **not yet run on GitHub**
+
+> Notes: say plainly that the loop is code and configuration; it has not run on GitHub yet. A full training run on
+> RunPod has not been done yet either (a boot test pod has).
+
+## 9b. MLOps level 2, in small
+
+- Level 0: every step by hand. Level 1: training is a pipeline that runs by itself (continuous training). Level 2: the
+  pipeline's own code is also built, tested and deployed automatically
+- SkySat: queue -> trainer -> gate -> registry (level 1); `ci.yml` and `drift.yml` -> `train.yml` (level 2)
+- Missing for a real level 2: an orchestrator such as Kubeflow or Airflow (GitHub Actions plays that part), a feature
+  store, data validation beyond the intake's checks, a staging environment
+- The loop is built but must be switched on by the repository owner
+
+> Notes: the three levels are from Google's "MLOps: Continuous delivery and automation pipelines in machine learning".
+> Detail: [architecture.md](architecture.md).
 
 ## 10. Live demo (video, ~3 min)
 
@@ -132,5 +153,5 @@ Video: *(link)* · Script: [demo/video.md](../demo/video.md)
 - Real drift did not hurt, so is the drift demo fake? (The scenario is simulated and we say so; the monitoring and the retrain path are real)
 - What happens if MLflow is down? (the API keeps the adapter it has and retries; a logging failure never breaks serving)
 - How do you stop a worse adapter from going to production? (the gate, and it must beat the champion on the same reviews)
-- Why is retraining not automatic? (it needs a GPU, which GitHub's machines do not have; the drift check opens an issue)
+- Is retraining automatic? (built: a drift alarm can start the Train workflow, which rents a RunPod GPU; it needs `AUTO_RETRAIN=true` and the secrets, and has not run on GitHub yet)
 - Where does production run, and what does it store? (an always-on VM, [server.md](server.md); numbers only, never review text)

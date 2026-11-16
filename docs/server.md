@@ -6,7 +6,7 @@ top. Training happens on a rented RunPod GPU or a local NVIDIA card; the adapter
 
 | | |
 |---|---|
-| Machine | Ubuntu 24.04 VM with **at least 8 GB of RAM** (the `api` container has `mem_limit: 8g`; the 1.5B-parameter model alone needs ~4 GB in bfloat16). The first version ran on an Azure `Standard_B2ats_v2` (1 GB RAM), which cannot host the LLM: resize it before the first deploy |
+| Machine | Ubuntu 24.04 VM, Azure `Standard_B2as_v2` (2 vCPU, 8 GB RAM; resized on 2026-11-16). The LLM needs **at least 8 GB** (the `api` container has `mem_limit: 8g`; the 1.5B-parameter model alone needs ~4 GB in bfloat16). The first version ran on a `Standard_B2ats_v2` (1 GB RAM), which cannot host it |
 | Runs | Caddy (HTTPS), Nginx (the gateway), 1 `api` container (the LLM, CPU), the `intake` (`POST /reviews` and the queue), PostgreSQL, Grafana |
 | Does not run | local MLflow (the API loads the champion from DagsHub), the k6 load test, any training (worker 2 runs on a RunPod pod) |
 | Holds | the review queue (`queue.reviews`, review text readable only by the `skysat` database user) and the prediction log (numbers only). The base model (~3 GB) is downloaded into a Docker volume at the first start |
@@ -20,7 +20,7 @@ internet -> Azure firewall (only 80, 443) -> Caddy (HTTPS) -> Nginx (rate limit,
 
 | Protection | How | Checked from outside |
 |---|---|---|
-| Only a few accounts | HTTP Basic login in Nginx, `tutor` and `team`, 128-bit random passwords; `github` for the drift check and `trainer` for the RunPod trainer ([the automatic loop](#the-automatic-loop)). The browser asks once; Swagger and Grafana then just work | No login or a wrong one: 401 on every path |
+| Only a few accounts | HTTP Basic login in Nginx, `tutor` and `team`, 128-bit random passwords; `github` for the drift check and `trainer` for the RunPod trainer ([switching it on](#switching-it-on)). The browser asks once; Swagger and Grafana then just work | No login or a wrong one: 401 on every path |
 | Encryption | Let's Encrypt certificate, renewed by Caddy; port 80 only redirects | HTTP answers 308 to HTTPS |
 | Password guessing and flooding | 20 requests/s per address (burst 100), checked **before** the login; addresses a client makes up are ignored | 429 under load, the tutor still gets in right after |
 | Oversized requests | 64 kB body limit (a review is a few kB; the API accepts 50,000 characters) | 100 kB: 413 *(re-check: the old 16 kB limit was the one tested)* |
@@ -49,26 +49,38 @@ server's `.env`. To lock someone out, delete their line in `gateway-users`.
 ## The automatic loop
 
 ```
-simulator (a PC) -> POST /reviews -> queue.reviews -> trainer pod (RunPod, through /queue/*) -> DagsHub champion -> api (here)
+simulator (a PC) -> POST /reviews -> queue.reviews -> drift.yml -> train.yml -> trainer pod (RunPod, through /queue/*)
+  -> DagsHub champion -> api (here)
 ```
 
 - **Intake** is always on: every review posted to `/reviews` is queued and sent to the API with its true labels.
-- **Training** happens on a RunPod pod: `make train-remote` from a PC, or by itself when `AUTO_TRAIN=1` is in this
-  server's `.env` (then also `RUNPOD_API_KEY`, `QUEUE_URL`, `QUEUE_USER`, `QUEUE_PASSWORD`). The pod deletes itself.
-- **The drift check** is [drift.yml](../.github/workflows/drift.yml): it reads `GET /scores/recent` (aggregates only)
-  and opens a GitHub issue when the live MAE or recommended accuracy is past the gate. Its schedule is commented out:
-  enable it for the final run.
+- **The drift check** is [drift.yml](../.github/workflows/drift.yml), scheduled hourly at :35. It reads `GET /model` and
+  `GET /scores/recent?version=N` (aggregates only) and judges only the serving model. On DRIFT it opens one issue
+  ("Drift detected: the serving model fell below the gate") and, only if the repository variable `AUTO_RETRAIN` is
+  `true`, calls the Train workflow. A scheduled run with missing secrets is skipped with a warning.
+- **Training** is [train.yml](../.github/workflows/train.yml) ("Train"), started by the drift check or by hand
+  (`gh workflow run train.yml`). It checks its settings, respects a cooldown (`TRAIN_COOLDOWN_HOURS`, default 6),
+  rents nothing if fewer than 300 reviews are pending, runs `llm.runpod_pod --wait --branch main --max-minutes 45`,
+  then `--sweep` (fails the run if a trainer pod is left), and writes a summary table. One run at a time.
+  `make train-remote` from a PC and `AUTO_TRAIN=1` in this server's `.env` (then also `RUNPOD_API_KEY`, `QUEUE_URL`,
+  `QUEUE_USER`, `QUEUE_PASSWORD`) still work.
+- **Deploy** is the `deploy` job of [ci.yml](../.github/workflows/ci.yml) (see CD below); if the smoke test fails it
+  goes back to the image that was running.
 
-**Switching it on**, once, in this order:
+All of this is code and configuration: it has not run on GitHub yet.
 
-1. The branch merged into `main` (CI builds the image there) and the new image on the server (the first start downloads the 3 GB base model; the VM needs the RAM above):
+### Switching it on
+
+1. Merge into `main` and put the new image on the server: **done on 2026-11-16** (`main` runs here with the intake and
+   the queue). For reference:
 
    ```bash
    az vm run-command invoke -g skysat-server -n skysat-server --command-id RunShellScript --scripts 'cd /opt/skysat && git pull -q && docker compose pull api intake && docker compose up -d --no-build' --query "value[0].message" -o tsv
    ```
 
-2. Two gateway logins for robots, so the tutor's and the team's passwords never leave this PC and each robot can be
-   locked out alone. The passwords are made and kept on the PC; only their hashes go to the server:
+2. Two gateway logins for robots, `github` (the drift check) and `trainer` (the RunPod pod): **done on 2026-11-16**.
+   The passwords are made and kept on the PC that created them (`~/.config/skysat/login-github` and `login-trainer`);
+   only their hashes are on the server. For reference:
 
    ```bash
    (umask 077; openssl rand -hex 16 > ~/.config/skysat/login-github; openssl rand -hex 16 > ~/.config/skysat/login-trainer)
@@ -77,29 +89,53 @@ simulator (a PC) -> POST /reviews -> queue.reviews -> trainer pod (RunPod, throu
    az vm run-command invoke -g skysat-server -n skysat-server --command-id RunShellScript --scripts "echo 'github:$(openssl passwd -apr1 -in ~/.config/skysat/login-github)' >> /opt/skysat/gateway-users && echo 'trainer:$(openssl passwd -apr1 -in ~/.config/skysat/login-trainer)' >> /opt/skysat/gateway-users && cd /opt/skysat && docker compose exec -T nginx nginx -s reload" --query "value[0].message" -o tsv
    ```
 
-3. Check the queue from the PC (expect counts, then `"pending"` growing after the first hour):
+3. Check the queue from the PC (expect counts, then `"pending"` growing):
 
    ```bash
    curl -s -u "trainer:$(cat ~/.config/skysat/login-trainer)" "https://$(cat ~/.config/skysat/server-address)/queue/stats"
    ```
 
-4. A first training run from the PC (`RUNPOD_API_KEY` from RunPod > Settings > API Keys; DagsHub from `.env`):
+4. The repository owner adds the settings in GitHub, Settings, Secrets and variables, Actions. The passwords for `github`
+   and `trainer` are on the PC that created them; send them to the owner privately, never in an issue, a comment or a
+   commit: the repository is public.
 
-   ```bash
-   QUEUE_URL="https://$(cat ~/.config/skysat/server-address)" QUEUE_USER=trainer QUEUE_PASSWORD="$(cat ~/.config/skysat/login-trainer)" make train-remote BRANCH=main
-   ```
+   | Secrets | Value |
+   |---|---|
+   | `RUNPOD_API_KEY` | from RunPod, Settings, API Keys |
+   | `SKYSAT_SERVER` | the server's host name, no `https://` |
+   | `SKYSAT_LOGIN` | `github:` + the password of `github` |
+   | `SKYSAT_TRAINER_PASSWORD` | the password of `trainer` |
+   | `MLFLOW_TRACKING_PASSWORD` | exists |
 
-5. The repository owner adds the secrets `SKYSAT_SERVER` (the address) and `SKYSAT_LOGIN` (`github:` + its password)
-   for the drift check, sent privately, never in an issue or a comment: the repository is public. Then
-   `gh workflow run drift.yml`, read the run's log, and remove the `#` before `schedule:` and its `cron` line.
+   | Variables | Value |
+   |---|---|
+   | `MLFLOW_TRACKING_URI`, `MLFLOW_TRACKING_USERNAME` | exist |
+   | `AUTO_RETRAIN` | `true` lets a drift alarm start the Train workflow |
+   | `TRAIN_COOLDOWN_HOURS` | optional, default 6 |
+   | `DEPLOY_TO_RUNNER` | `true` for the deploy job (needs the self-hosted runner, see CD below) |
 
-**Switching it off**: `AUTO_TRAIN=0` (the default) stops automatic pods; `gh workflow disable drift.yml` stops the drift
-check. To lock a robot out, delete its line in `gateway-users`.
+5. Try each part by hand and read its log: `gh workflow run drift.yml`, then `gh workflow run train.yml`. Note the date
+   of the first real run; none has run yet.
+
+**Switching it off**: `AUTO_RETRAIN` not `true` (a drift alarm then only opens the issue); `gh workflow disable
+drift.yml` stops the drift check; `DEPLOY_TO_RUNNER` not `true` stops the deploy job; `AUTO_TRAIN=0` (the default)
+stops pods started by the intake. To lock a robot out, delete its line in `gateway-users`.
+
+### Before a demo: freeze it
+
+Set `AUTO_RETRAIN` and `DEPLOY_TO_RUNNER` to `false` (or disable the two workflows with `gh workflow disable`), so
+nothing retrains or redeploys while presenting. If the demo needs them, run them by hand (`gh workflow run train.yml`).
+Enable them again afterwards.
 
 ## Cost and switching it off
 
-About $3 to $7 for 15 days from the Azure for Students credit, depending on whether the free VM hours apply: check
-Cost Management. No card is charged: when the credit ends, Azure disables the subscription.
+### What it can cost
+
+- A training run: the Train workflow stops the pod after 45 minutes; at the dearest GPU in the list ($0.22/h) that is at
+  most about $0.17 per run. With the 6 h cooldown there are at most 4 automatic runs a day.
+- The VM: `Standard_B2as_v2` in austriaeast is $0.0864 per hour on Azure's price list, about $2 a day, from the Azure
+  for Students credit. No card is charged: when the credit ends, Azure disables the subscription. Check Cost
+  Management. Deallocate the VM when it is not needed:
 
 ```bash
 az vm deallocate -g skysat-server -n skysat-server    # stop; the disk and IP still cost about $6 a month
@@ -111,7 +147,7 @@ az group delete -n skysat-server                      # remove everything, inclu
 
 ```bash
 az group create -n skysat-server -l austriaeast
-az vm create -g skysat-server -n skysat-server --image Ubuntu2404 --size <a size with >= 8 GB RAM; the first version used Standard_B2ats_v2, 1 GB> \
+az vm create -g skysat-server -n skysat-server --image Ubuntu2404 --size <a size with >= 8 GB RAM, now Standard_B2as_v2; the first version used Standard_B2ats_v2, 1 GB> \
   --admin-username skysat --ssh-key-values ~/.ssh/skysat-server.pub --public-ip-sku Standard \
   --storage-sku StandardSSD_LRS --os-disk-size-gb 32 --nsg-rule SSH
 az network public-ip update -g skysat-server -n skysat-serverPublicIP --dns-name <name>
@@ -158,10 +194,22 @@ switch it on:
 3. On the VM, as user `skysat`, install the runner with the label `skysat`, and start it as a service.
 4. Settings → Secrets and variables → Actions → Variables: `DEPLOY_TO_RUNNER` = `true`.
 
+The deploy job remembers the image that was running and goes back to it if the smoke test fails (only the image: the
+compose and gateway files stay as they are).
+
 A runner uses memory on a VM and is the one thing that runs outside code here, so stop it when it is not needed.
 
 ## Measured
 
-Not yet measured with the LLM on the server: fill in the restart time (until `/score` answers, including loading the base
-model from the volume), the latency of one review on the server's CPU, and the smoke test. The numbers of 2026-11-05 were for the previous
-tabular API on a 1 GB VM and no longer apply.
+On 2026-11-16, on the `Standard_B2as_v2` VM with champion version 1:
+
+| What | Result |
+|---|---|
+| One review in the live loop | about one minute (34 s for the short smoke-test review) |
+| 100 healthy reviews (2019-01) | live MAE 0.950 ± 0.083, recommended accuracy 95.0%, drift check "no drift" |
+| then 300 harsh reviews (2019-02) | MAE 1.150 ± 0.061, recommended accuracy 89.0% on those 300, drift check "DRIFT" (on MAE) |
+| all 400 together | MAE 1.100 ± 0.050, accuracy 90.5%, "DRIFT" |
+
+The ± is one standard error. Not yet measured on the server: the restart time (until `/score` answers, including loading
+the base model from the volume) and the failure table above, which is from 2026-11-05. The numbers of 2026-11-05 were
+for the previous tabular API on a 1 GB VM and no longer apply.

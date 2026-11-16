@@ -144,10 +144,13 @@ Each answer adds a row to `llm_scores` (`monitoring/init.sql`): `created_at`, `m
 
 - **Grafana** (`http://localhost:3000`, dashboard `skysat`): requests per hour, latency, live MAE and recommended
   accuracy per hour, complaint shares, model version over time.
-- **`GET /scores/recent?hours=N`**: aggregates only (counts, means, shares, model versions). Never text.
+- **`GET /scores/recent?hours=N`**: aggregates only (counts, means, shares, model versions). Never text. The optional
+  `version=V` counts only the answers of that model version (`model_versions` still lists all of them).
 - **`llm/drift_check.py`** (`make llm-drift`, and `drift.yml` on GitHub) says DRIFT if, on at least 100 labelled
   requests, the live MAE is above `gate.MAE_MAX` or the live recommended accuracy is below `gate.RECOMMENDED_MIN`,
-  by more than one standard error of the live sample. If the server cannot be read it exits with code 2.
+  by more than one standard error of the live sample. It judges only the model that is serving now (it reads
+  `GET /model` first), so a retrained model is not blamed for the old one's answers; `--all-versions` counts every
+  version, as before. If the server cannot be read it exits with code 2.
 
 ## What changes for big models (and what does not)
 
