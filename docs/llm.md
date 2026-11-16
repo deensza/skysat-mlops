@@ -70,10 +70,10 @@ Each review has a fixed id (`kaggle128k:<row>[:scenario]`), so posting it twice 
   A claim older than 3 hours (a pod that died) is put back by the intake.
 
 `llm/trainer.py` claims up to `--n` (2,000) new reviews and `--replay` (500) trained ones. **10% of the new reviews are kept
-back for the gate** and never trained on (at most `--n-gate-max`, 200), and no training row shares its text with a gate
-row. A fresh LoRA adapter is trained on the frozen base; `llm/train_lora.py run()` gates it, scores the current champion
+back for the gate** and never trained on (at least `--n-gate-min`, 100; at most `--n-gate-max`, 200), and no training
+row shares its text with a gate row. A fresh LoRA adapter is trained on the frozen base; `llm/train_lora.py run()` gates it, scores the current champion
 on the same gate reviews, logs to MLflow, registers the version if it passes, and makes it the champion if its
-`combined` beats the champion's. Fewer than `--min-new` (200) new reviews: nothing is trained.
+`combined` beats the champion's. Fewer than `--min-new` (300) new reviews: nothing is trained.
 
 ## The gate and what it measured
 

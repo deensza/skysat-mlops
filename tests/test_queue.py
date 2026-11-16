@@ -69,6 +69,13 @@ def test_trainer_caps_the_gate():
     assert len(prepare(batch(n_new=1000, n_replay=0), n_gate_max=30, seed=0)[1]) == 30
 
 
+def test_trainer_keeps_a_gate_big_enough_to_mean_something():
+    sizes = lambda n: [len(f) for f in prepare(batch(n_new=n, n_replay=0), n_gate_max=200, seed=0, n_gate_min=100)]
+    assert sizes(360) == [260, 100]    # the demo's drift batch: 10% would be 36 gate reviews
+    assert sizes(2000) == [1800, 200]  # a full batch: 10%, as before
+    assert sizes(150) == [75, 75]      # never more than half of the batch
+
+
 def test_runpod_request_is_cheap_safe_and_self_deleting(monkeypatch):
     monkeypatch.setenv("QUEUE_PASSWORD", "secret")
     body = runpod_pod.pod_body(runpod_pod.GPUS[0], "main", "--n 300", 60)
