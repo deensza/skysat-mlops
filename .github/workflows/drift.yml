@@ -1,17 +1,18 @@
 # Drift check on the server's traffic: reads GET /scores/recent (aggregates only: counts, MAE, accuracy, shares; never
 # review text) through the gateway and compares the live MAE and recommended accuracy with the gate in llm/gate.py
-# (MAE <= 1.0, recommended >= 0.90) over at least 50 labelled requests (llm/drift_check.py).
-# On drift it opens a GitHub issue. It does NOT retrain: training needs a GPU, which GitHub's machines do not have.
-# A person runs `make llm-cycle` (or `make llm-train LLM_SPLIT=live-2019 SCENARIO=harsh`) on a GPU PC or on Colab;
-# the new adapter is promoted only if it beats the champion, and the server loads it by itself within minutes.
+# (MAE <= 1.0, recommended >= 0.90) over at least 50 labelled requests (llm/drift_check.py). The labelled
+# requests are the intake's live traffic: each passenger review, sent to the model with its true labels.
+# On drift it opens a GitHub issue. It does NOT retrain on GitHub (no GPU): the trainer runs on a RunPod GPU
+# (`make train-remote`, or by itself when the server's intake has AUTO_TRAIN=1); the new adapter is promoted only
+# if it beats the champion, and the server loads it by itself within minutes.
 # The run's summary page shows the table (numbers, never rows).
 #
 # By hand: Actions -> Drift check -> Run workflow, or `gh workflow run drift.yml`.
-# Setup (repository owner, once): secrets SKYSAT_SERVER and SKYSAT_LOGIN (see traffic.yml, docs/server.md).
+# Setup (repository owner, once): secrets SKYSAT_SERVER and SKYSAT_LOGIN (the gateway login for GitHub, docs/server.md).
 name: Drift check
 
 on:
-  # Enable for the final run: remove the `#` of the next two lines (a few minutes after the traffic of :05).
+  # Enable for the final run: remove the `#` of the next two lines.
   # schedule:
   #   - cron: "35 * * * *"  # every hour at :35
   workflow_dispatch:
@@ -57,13 +58,13 @@ jobs:
       - name: Open an issue on drift
         if: steps.drift.outputs.drift == 'true'
         run: |
-          title="Drift detected: retrain the LoRA adapter (make llm-cycle)"
+          title="Drift detected: retrain the LoRA adapter (make train-remote)"
           if [ -n "$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[].number')" ]; then
             echo "An issue about this is already open"; exit 0
           fi
           cat > body.md <<EOF
           The live accuracy of the champion fell below the gate in llm/gate.py (MAE <= 1.0, recommended >= 0.90) over at least 50 labelled requests in the last 24 hours. The table is on the summary page of [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID).
 
-          Retraining needs a GPU, so it does not run on GitHub. On a GPU PC or on Colab run \`make llm-cycle\` or \`make llm-train LLM_SPLIT=live-2019 SCENARIO=harsh\`. A new adapter is promoted only if it beats the champion.
+          Retraining needs a GPU, so it does not run on GitHub. Run \`make train-remote\` (a RunPod pod takes the newest reviews from the queue, trains, and deletes itself). A new adapter is promoted only if it beats the champion.
           EOF
           gh issue create --title "$title" --body-file body.md

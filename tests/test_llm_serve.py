@@ -141,6 +141,22 @@ def test_new_champion_is_a_new_adapter_on_the_same_base(fake, tmp_path, monkeypa
     assert not (tmp_path / "download-2").exists()  # the downloaded adapter is deleted once in memory
 
 
+def test_a_registry_that_gives_int_versions_still_loads(fake, tmp_path, monkeypatch):
+    """A local sqlite MLflow returns ModelVersion.version as an int (DagsHub: a str); found 2026-11-16."""
+    mlflow = pytest.importorskip("mlflow")
+    from llm import train_lora
+    monkeypatch.setattr(mlflow.artifacts, "download_artifacts",
+                        lambda artifact_uri, dst_path: str(write_adapter(tmp_path / "dl")))
+    client = SimpleNamespace(get_model_version_by_alias=lambda name, alias: SimpleNamespace(version=3, source="x"))
+    version, _ = train_lora.champion_adapter(client, serve.BASE_MODEL)
+    assert version == "3"
+    monkeypatch.setattr(serve, "ADAPTER_DIR", None)
+    monkeypatch.setattr(serve, "mlflow_client", lambda: client)
+    monkeypatch.setattr(serve, "champion_adapter", lambda c, base: ("3", str(write_adapter(tmp_path / "dl2"))))
+    serve.serving.refresh()
+    assert serve.health()["model_version"] == "3"
+
+
 class FakePool:
     def __init__(self, fail=False):
         self.fail, self.executed = fail, []

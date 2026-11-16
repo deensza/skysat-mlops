@@ -3,7 +3,10 @@
 #   make install        one-time: .venv with the pinned packages for the tests (no GPU, no torch)
 #   make test           run the tests;   make ci: the checks GitHub Actions runs
 #   make llm-install    one-time: .venv-llm with CUDA PyTorch, transformers, peft (NVIDIA GPU)
-#   make llm-cycle      the whole lifecycle on this PC: train v1, see it fail under drift, retrain v2
+#   make llm-up         the Docker stack: API, intake (POST /reviews + the queue), PostgreSQL, Nginx, Grafana, MLflow
+#   make simulate-seed  simulated passengers: training reviews for the first model, into the queue
+#   make llm-train      the trainer on this PC's GPU;  make train-remote: on the cheapest free RunPod GPU
+#   make simulate       live passengers (SCENARIO=harsh: the drift), scored by the model as they arrive
 #   make d-up / d-down  start / stop the Docker stack (the API, MLflow, PostgreSQL, Nginx, Grafana)
 
 # Python 3.12 is what CI uses; override if needed: make install PYTHON=3.13
@@ -15,7 +18,7 @@ PY := $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 export MLFLOW_TRACKING_URI MLFLOW_TRACKING_USERNAME MLFLOW_TRACKING_PASSWORD
 export HF_HUB_OFFLINE
 
-# The llm-train / llm-eval / llm-cycle / llm-serve commands use a local MLflow (sqlite), so a trial never touches the
+# The llm-train / llm-serve commands use a local MLflow (sqlite), so a trial never touches the
 # team's registry, whatever .env says. SHARED=yes: use the MLflow from .env instead (a new champion there is picked
 # up by the server). The docker targets are not affected: they read .env themselves.
 SHARED ?= no
@@ -23,7 +26,7 @@ LLM_MLFLOW ?= sqlite:///artifacts/llm-runs/mlflow.db
 LLM_ENV := $(if $(filter yes,$(SHARED)),,env -u MLFLOW_TRACKING_USERNAME -u MLFLOW_TRACKING_PASSWORD MLFLOW_TRACKING_URI=$(LLM_MLFLOW))
 
 .PHONY: help install test compose-check ci smoke d-up d-build d-down d-ps d-logs d-loadtest d-wipe \
-	llm-install llm-train llm-eval llm-promote llm-serve llm-up llm-replay llm-drift llm-cycle
+	llm-install llm-train llm-promote llm-serve llm-up llm-drift simulate-seed simulate queue-stats train-remote train-remote-dry
 
 help:
 	@awk -F ':.*## ' '/^[a-z-]+:.*## /{printf "%-16s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -68,27 +71,39 @@ d-wipe: ## docker: stop and DELETE the local data (prediction log, local MLflow,
 	@printf "Delete ALL local Docker data: prediction log, local MLflow models, the 3 GB base model, Grafana? [y/N] "; read answer; \
 	if [ "$$answer" = y ]; then docker compose down -v; else echo "Nothing deleted."; fi
 
-# The complaint-box LLM (llm/, docs/llm.md): LoRA on a GPU, here (.venv-llm) or on Colab (notebooks/)
+# The complaint-box LLM (llm/, docs/llm.md): simulator -> POST /reviews (intake) -> queue -> trainer (RunPod or this PC)
 LLM_PY := .venv-llm/bin/python
-LLM_SPLIT ?= train
-SCENARIO ?= none
-SCENARIO_ARG := $(if $(filter-out none,$(SCENARIO)),--scenario $(SCENARIO),)
 URL ?= http://localhost:8080
+QUEUE ?= http://localhost:8001
+SCENARIO ?= none
 FROM ?= 2019-01
-MONTHS ?= 3
-PER_MONTH ?= 50
+MONTHS ?= 1
+PER_MONTH ?= 100
+N ?= 2000
+BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD)
 
 llm-install: ## LLM: .venv-llm with CUDA PyTorch + transformers/peft (needs an NVIDIA GPU; ~5 GB)
 	uv venv --python $(PYTHON) .venv-llm
-	uv pip install --python $(LLM_PY) torch==2.14.1 numpy==2.1.3 pandas==2.2.3 -r requirements-llm.txt
+	uv pip install --python $(LLM_PY) torch==2.14.1 numpy==2.1.3 pandas==2.2.3 "psycopg[binary]==3.3.6" -r requirements-llm.txt
 
-llm-train: ## LLM: LoRA-tune, gate, log, register: make llm-train LLM_SPLIT=live-2019 SCENARIO=harsh (ARGS=--no-mlflow: log nothing)
-	@mkdir -p artifacts/llm-runs
-	$(LLM_ENV) $(LLM_PY) -m llm.train_lora --split $(LLM_SPLIT) $(SCENARIO_ARG) $(ARGS)
+simulate-seed: ## LLM: simulated passengers post N (2000) reviews flown <= 2018 into the queue: the first model's training data
+	$(PY) -m simulator.replay --url $(QUEUE) --seed-train $(N)
 
-llm-eval: ## LLM: score the champion on LLM_SPLIT (and SCENARIO): make llm-eval LLM_SPLIT=live-2019 SCENARIO=harsh
+simulate: ## LLM: live passengers: make simulate FROM=2019-01 MONTHS=1 PER_MONTH=100 SCENARIO=harsh (scored as they arrive)
+	$(PY) -m simulator.replay --url $(QUEUE) --from $(FROM) --months $(MONTHS) --per-month $(PER_MONTH) --scenario $(SCENARIO)
+
+queue-stats: ## LLM: what waits in the queue: make queue-stats QUEUE=http://localhost:8001
+	@curl -s $(QUEUE)/queue/stats; echo
+
+llm-train: ## LLM: worker 2 on this PC's GPU against QUEUE (local MLflow): make llm-train ARGS="--n 300 --keep-pending"
 	@mkdir -p artifacts/llm-runs
-	$(LLM_ENV) $(LLM_PY) -m llm.train_lora --eval-only --split $(LLM_SPLIT) $(SCENARIO_ARG) $(ARGS)
+	$(LLM_ENV) $(LLM_PY) -m llm.trainer --queue-url $(QUEUE) $(ARGS)
+
+train-remote: ## LLM: worker 2 on the cheapest free RunPod GPU (needs RUNPOD_API_KEY, QUEUE_URL/USER/PASSWORD; BRANCH must be pushed)
+	$(PY) -m llm.runpod_pod --wait --branch $(BRANCH) --trainer-args "$(ARGS)"
+
+train-remote-dry: ## LLM: print the RunPod request train-remote would send (passwords hidden), start nothing
+	$(PY) -m llm.runpod_pod --dry-run --branch $(BRANCH) --trainer-args "$(ARGS)"
 
 llm-promote: ## LLM: make a registered version the champion (the release step after --no-promote): make llm-promote VERSION=2 SHARED=yes
 	@test -n "$(VERSION)" || { echo "usage: make llm-promote VERSION=2 [SHARED=yes]"; exit 1; }
@@ -100,17 +115,8 @@ LLM_ADAPTER_DIR ?= $(if $(wildcard artifacts/llm/adapter/skysat_llm.json),artifa
 llm-serve: ## LLM: the API on http://localhost:8090 (POST /score, /docs), CPU, from .venv-llm, no database
 	$(LLM_ENV) CUDA_VISIBLE_DEVICES= LLM_ADAPTER_DIR=$(LLM_ADAPTER_DIR) $(LLM_PY) -m uvicorn llm.serve:app --host 127.0.0.1 --port 8090
 
-llm-up: ## LLM: build and start the whole Docker stack (same as d-up with a rebuild; the API is at :8080/score)
+llm-up: ## LLM: build and start the whole Docker stack (API, intake, PostgreSQL, Nginx, Grafana, MLflow)
 	docker compose up -d --build
-
-llm-replay: ## LLM: send live reviews with their true labels: make llm-replay URL=.. SCENARIO=harsh FROM=2019-01 MONTHS=3 PER_MONTH=50
-	$(PY) -m simulator.replay --url $(URL)/score --scenario $(SCENARIO) --from $(FROM) --months $(MONTHS) --per-month $(PER_MONTH)
 
 llm-drift: ## LLM: drift check on the last 24 h of the server's log: make llm-drift URL=http://localhost:8080
 	$(PY) -m llm.drift_check --url $(URL) $(ARGS)
-
-llm-cycle: ## LLM: train v1 on <= 2018, score it on harsh 2019 (fails the gate), retrain v2 on harsh 2019 (promoted)
-	@mkdir -p artifacts/llm-runs
-	$(LLM_ENV) $(LLM_PY) -m llm.train_lora --split train
-	$(LLM_ENV) $(LLM_PY) -m llm.train_lora --eval-only --split live-2019 --scenario harsh
-	$(LLM_ENV) $(LLM_PY) -m llm.train_lora --split live-2019 --scenario harsh

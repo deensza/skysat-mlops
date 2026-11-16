@@ -7,9 +7,9 @@ top. Training happens on a GPU PC or Colab; the adapter and the `champion` alias
 | | |
 |---|---|
 | Machine | Ubuntu 24.04 VM with **at least 8 GB of RAM** (the `api` container has `mem_limit: 8g`; the 1.5B-parameter model alone needs ~4 GB in bfloat16). The first version ran on an Azure `Standard_B2ats_v2` (1 GB RAM), which cannot host the LLM: resize it before the first deploy |
-| Runs | Caddy (HTTPS), Nginx (the gateway), 1 `api` container (the LLM, CPU), PostgreSQL, Grafana |
-| Does not run | local MLflow (the API loads the champion from DagsHub), the k6 load test, any training |
-| Holds no data | no dataset file is ever copied here; the replay runs on GitHub or a laptop and sends reviews over HTTPS. The base model (~3 GB) is downloaded into a Docker volume at the first start |
+| Runs | Caddy (HTTPS), Nginx (the gateway), 1 `api` container (the LLM, CPU), the `intake` (`POST /reviews` and the queue), PostgreSQL, Grafana |
+| Does not run | local MLflow (the API loads the champion from DagsHub), the k6 load test, any training (worker 2 runs on a RunPod pod) |
+| Holds | the review queue (`queue.reviews`, review text readable only by the `skysat` database user) and the prediction log (numbers only). The base model (~3 GB) is downloaded into a Docker volume at the first start |
 | Addresses | `https://<server>/docs` (API, `POST /score`), `https://<server>/grafana/d/skysat` (dashboard). The name is not in this public repo on purpose |
 
 ## The gateway: the only way in
@@ -20,11 +20,11 @@ internet -> Azure firewall (only 80, 443) -> Caddy (HTTPS) -> Nginx (rate limit,
 
 | Protection | How | Checked from outside |
 |---|---|---|
-| Only 2 accounts | HTTP Basic login in Nginx, `tutor` and `team`, 128-bit random passwords (a third, `github`, only for [the automatic loop](#the-automatic-loop)). The browser asks once; Swagger and Grafana then just work | No login or a wrong one: 401 on every path |
+| Only a few accounts | HTTP Basic login in Nginx, `tutor` and `team`, 128-bit random passwords; `github` for the drift check and `trainer` for the RunPod trainer ([the automatic loop](#the-automatic-loop)). The browser asks once; Swagger and Grafana then just work | No login or a wrong one: 401 on every path |
 | Encryption | Let's Encrypt certificate, renewed by Caddy; port 80 only redirects | HTTP answers 308 to HTTPS |
 | Password guessing and flooding | 20 requests/s per address (burst 100), checked **before** the login; addresses a client makes up are ignored | 429 under load, the tutor still gets in right after |
 | Oversized requests | 64 kB body limit (a review is a few kB; the API accepts 50,000 characters) | 100 kB: 413 *(re-check: the old 16 kB limit was the one tested)* |
-| Nothing else reachable | Azure firewall: 80 and 443 only, SSH closed. PostgreSQL and the health port listen on the server itself; Nginx forwards only `/score`, `/model`, `/health`, `/docs`, `/openapi.json`, `/scores/recent`, and `/grafana/` | 22, 3000, 5432, 8080 closed from outside |
+| Nothing else reachable | Azure firewall: 80 and 443 only, SSH closed. PostgreSQL and the health port listen on the server itself; Nginx forwards only `/score`, `/model`, `/health`, `/docs`, `/openapi.json`, `/scores/recent`, `/grafana/`, `/reviews` (to the intake, any login), and `/queue/claim|done|stats` (to the intake, **only for the `trainer` login**: 403 for anyone else) | 22, 3000, 5432, 8001, 8080 closed from outside |
 | A viewer cannot damage the log | Grafana's viewers can send their own SQL, so its data source is a read-only database user, `grafana_reader` | `DROP`, `DELETE`, reading server files, running programs: all denied |
 
 Not protected against: someone who gets a password can use the API within the limits, and the DagsHub token sits in the
@@ -36,10 +36,8 @@ server's `.env`. To lock someone out, delete their line in `gateway-users`.
 - **Hang or stopped container:** [monitoring/watchdog.sh](../monitoring/watchdog.sh), from cron every 5 minutes. It
   starts stopped containers at once and restarts the API after 3 failed health checks.
 - **Disk:** container logs are capped at 20 MB each.
-- **Dashboard:** opens on the last 30 days, so a visitor sees data even if no traffic was sent today. Once
-  [the automatic loop](#the-automatic-loop) is on, GitHub sends reviews every hour; without it, before showing it, from a PC
-  with `data/reviews/AirlineReviews.csv`: `API_USER=team API_PASSWORD=$(cat ~/.config/skysat/login-team) make llm-replay URL=https://$(cat ~/.config/skysat/server-address) MONTHS=3 PER_MONTH=50`
-  (a review takes seconds on CPU, one at a time).
+- **Dashboard:** opens on the last 30 days. Fresh traffic comes from the simulator (`make simulate` with
+  `QUEUE=https://<server>` and the `team` login in `API_USER` / `API_PASSWORD`): each review is scored as it arrives.
 
 | Failure, tested for real on 2026-11-05 with the previous (tabular) API on the 1 GB VM: re-test with the LLM | Back after |
 |---|---|
@@ -50,43 +48,53 @@ server's `.env`. To lock someone out, delete their line in `gateway-users`.
 
 ## The automatic loop
 
-Two GitHub workflows use the server like a real airline would: [traffic.yml](../.github/workflows/traffic.yml) replays
-live reviews with their true labels (a scenario such as `harsh` can be chosen), and
-[drift.yml](../.github/workflows/drift.yml) reads `GET /scores/recent` (aggregates only) through the gateway and opens a
-GitHub issue when the live MAE or recommended accuracy is past the gate limits. **Nothing trains on GitHub or on this
-machine**: a person retrains on a GPU (`make llm-cycle`), and the API checks DagsHub every `MODEL_RELOAD_SECONDS` for the
-new champion. Both schedules are commented out in the workflow files: enable them for the final run.
+```
+simulator (a PC) -> POST /reviews -> queue.reviews -> trainer pod (RunPod, through /queue/*) -> DagsHub champion -> api (here)
+```
 
-`GET /scores/recent` sits behind the same login as Grafana. It returns counts, means and shares, never review text. The
-replay sends review text from the GitHub runner to the server over HTTPS.
+- **Intake** is always on: every review posted to `/reviews` is queued and sent to the API with its true labels.
+- **Training** happens on a RunPod pod: `make train-remote` from a PC, or by itself when `AUTO_TRAIN=1` is in this
+  server's `.env` (then also `RUNPOD_API_KEY`, `QUEUE_URL`, `QUEUE_USER`, `QUEUE_PASSWORD`). The pod deletes itself.
+- **The drift check** is [drift.yml](../.github/workflows/drift.yml): it reads `GET /scores/recent` (aggregates only)
+  and opens a GitHub issue when the live MAE or recommended accuracy is past the gate. Its schedule is commented out:
+  enable it for the final run.
 
 **Switching it on**, once, in this order:
 
-1. `osm` merged into `main`: scheduled workflows only run from `main`, and CI builds the image there.
-2. The new image on the server (the first start downloads the 3 GB base model; the VM needs the RAM above):
+1. The branch merged into `main` (CI builds the image there) and the new image on the server (the first start downloads the 3 GB base model; the VM needs the RAM above):
 
    ```bash
-   az vm run-command invoke -g skysat-server -n skysat-server --command-id RunShellScript --scripts 'cd /opt/skysat && git pull -q && docker compose pull api && docker compose up -d --no-build' --query "value[0].message" -o tsv
+   az vm run-command invoke -g skysat-server -n skysat-server --command-id RunShellScript --scripts 'cd /opt/skysat && git pull -q && docker compose pull api intake && docker compose up -d --no-build' --query "value[0].message" -o tsv
    ```
 
-3. A gateway login only for GitHub, so the tutor's and the team's passwords never leave this PC and the robot can
-   be locked out alone. The password is made and kept on the PC, and only its hash goes to the server:
+2. Two gateway logins for robots, so the tutor's and the team's passwords never leave this PC and each robot can be
+   locked out alone. The passwords are made and kept on the PC; only their hashes go to the server:
 
    ```bash
-   (umask 077; openssl rand -hex 16 > ~/.config/skysat/login-github)
+   (umask 077; openssl rand -hex 16 > ~/.config/skysat/login-github; openssl rand -hex 16 > ~/.config/skysat/login-trainer)
    ```
    ```bash
-   az vm run-command invoke -g skysat-server -n skysat-server --command-id RunShellScript --scripts "echo 'github:$(openssl passwd -apr1 -in ~/.config/skysat/login-github)' >> /opt/skysat/gateway-users && cd /opt/skysat && docker compose exec -T nginx nginx -s reload" --query "value[0].message" -o tsv
+   az vm run-command invoke -g skysat-server -n skysat-server --command-id RunShellScript --scripts "echo 'github:$(openssl passwd -apr1 -in ~/.config/skysat/login-github)' >> /opt/skysat/gateway-users && echo 'trainer:$(openssl passwd -apr1 -in ~/.config/skysat/login-trainer)' >> /opt/skysat/gateway-users && cd /opt/skysat && docker compose exec -T nginx nginx -s reload" --query "value[0].message" -o tsv
    ```
 
-4. The repository owner adds the secrets `SKYSAT_SERVER` (the address), `SKYSAT_LOGIN` (`github:` + the password from
-   step 3) and `KAGGLE_API_TOKEN` (the traffic workflow downloads the dataset onto the temporary runner), sent to them
-   privately, never in an issue or a comment: the repository is public.
-5. First runs by hand: `gh workflow run traffic.yml -f scenario=harsh`, then `gh workflow run drift.yml`, and read both
-   runs' logs. Then remove the `#` before `schedule:` and its `cron` line in both files.
+3. Check the queue from the PC (expect counts, then `"pending"` growing after the first hour):
 
-**Switching it off**: put the `#` back, or `gh workflow disable traffic.yml` and `gh workflow disable drift.yml`.
-To lock GitHub out of the server too, delete the `github` line in `gateway-users`.
+   ```bash
+   curl -s -u "trainer:$(cat ~/.config/skysat/login-trainer)" "https://$(cat ~/.config/skysat/server-address)/queue/stats"
+   ```
+
+4. A first training run from the PC (`RUNPOD_API_KEY` from RunPod > Settings > API Keys; DagsHub from `.env`):
+
+   ```bash
+   QUEUE_URL="https://$(cat ~/.config/skysat/server-address)" QUEUE_USER=trainer QUEUE_PASSWORD="$(cat ~/.config/skysat/login-trainer)" make train-remote BRANCH=main
+   ```
+
+5. The repository owner adds the secrets `SKYSAT_SERVER` (the address) and `SKYSAT_LOGIN` (`github:` + its password)
+   for the drift check, sent privately, never in an issue or a comment: the repository is public. Then
+   `gh workflow run drift.yml`, read the run's log, and remove the `#` before `schedule:` and its `cron` line.
+
+**Switching it off**: `AUTO_TRAIN=0` (the default) stops automatic pods; `gh workflow disable drift.yml` stops the drift
+check. To lock a robot out, delete its line in `gateway-users`.
 
 ## Cost and switching it off
 
@@ -118,12 +126,13 @@ On the VM: 2 GB of swap, Docker, a clone of this repo in `/opt/skysat`, the watc
 user, and these two files, which are never in git:
 
 ```
-/opt/skysat/gateway-users    the logins: tutor:<hash>, team:<hash>, and github:<hash> for the loop (openssl passwd -apr1)
+/opt/skysat/gateway-users    the logins: tutor:<hash>, team:<hash>, github:<hash> and trainer:<hash> for the loop (openssl passwd -apr1)
 /opt/skysat/.env (mode 600)
   MLFLOW_TRACKING_URI, MLFLOW_TRACKING_USERNAME, MLFLOW_TRACKING_PASSWORD   the team's DagsHub
   POSTGRES_PASSWORD, GRAFANA_ADMIN_PASSWORD, GRAFANA_DB_PASSWORD            random, made for this server
   SITE_ADDRESS=<name>.austriaeast.cloudapp.azure.com
   (MODEL_RELOAD_SECONDS is 60 on the server, set in docker-compose.server.yml: a promotion goes live within a minute)
+  optional, for AUTO_TRAIN=1: RUNPOD_API_KEY, QUEUE_URL=https://<SITE_ADDRESS>, QUEUE_USER=trainer, QUEUE_PASSWORD
   API_IMAGE=ghcr.io/deensza/skysat-mlops-api:latest                         nothing is built on the server
   COMPOSE_FILE=docker-compose.yml:docker-compose.server.yml
   COMPOSE_PROJECT_NAME=skysat-mlops

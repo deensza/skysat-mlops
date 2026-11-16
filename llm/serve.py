@@ -168,7 +168,7 @@ class ScoreModel:
                 log.error("Refused: %s", err)
             return
         client = mlflow_client()
-        version = client.get_model_version_by_alias(MODEL_NAME, ALIAS).version
+        version = str(client.get_model_version_by_alias(MODEL_NAME, ALIAS).version)
         if version == self.rejected or (self.current and self.current["version"] == version):
             return
         champion = champion_adapter(client, BASE_MODEL)  # None: tuned for another base model or prompt version

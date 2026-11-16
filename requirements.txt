@@ -1,4 +1,4 @@
-# What the tests, the replay (simulator/replay.py) and the drift check (llm/drift_check.py) need: no torch, no
+# What the tests, the collector (llm/collector.py) and the drift check (llm/drift_check.py) need: no torch, no
 # transformers (CI and `make install`). Training and serving packages: requirements-llm.txt and llm/Dockerfile.
 numpy==2.1.3
 pandas==2.2.3

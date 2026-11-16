@@ -51,6 +51,40 @@ services:
       retries: 3
       start_period: 600s  # the first start downloads the 3 GB base model
 
+  # The intake (llm/intake.py): POST /reviews puts a passenger's review (the simulator's, simulator/replay.py) in the
+  # queue (PostgreSQL, schema queue) and sends it to the API with its true labels as live traffic. The trainer
+  # (llm/trainer.py, on RunPod or this PC) takes batches from it: /queue/claim, /queue/done, /queue/stats.
+  # Same image as the API (it imports neither torch nor the model).
+  intake:
+    image: ${API_IMAGE:-skysat-api:local}
+    command: ["uvicorn", "llm.intake:app", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      DATABASE_URL: postgresql://skysat:${POSTGRES_PASSWORD:-skysat}@postgres:5432/skysat
+      SCORE_URL: http://api:8000/score
+      SCORE_SECONDS: ${SCORE_SECONDS:-5}
+      # AUTO_TRAIN=1: start a trainer pod on RunPod by itself when TRAIN_MIN_PENDING reviews wait (llm/runpod_pod.py)
+      AUTO_TRAIN: ${AUTO_TRAIN:-0}
+      TRAIN_MIN_PENDING: ${TRAIN_MIN_PENDING:-500}
+      TRAIN_BRANCH: ${TRAIN_BRANCH:-main}
+      RUNPOD_API_KEY: ${RUNPOD_API_KEY:-}
+      QUEUE_URL: ${QUEUE_URL:-}
+      QUEUE_USER: ${QUEUE_USER:-}
+      QUEUE_PASSWORD: ${QUEUE_PASSWORD:-}
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-}
+      MLFLOW_TRACKING_USERNAME: ${MLFLOW_TRACKING_USERNAME:-}
+      MLFLOW_TRACKING_PASSWORD: ${MLFLOW_TRACKING_PASSWORD:-}
+    ports:
+      - "127.0.0.1:8001:8001"  # the simulator and a local trainer; on the server the gateway is the only way in
+    mem_limit: 512m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   # Gateway: http://localhost:8080
   nginx:
     image: nginx:1.30.6-alpine
