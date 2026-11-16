@@ -19,10 +19,16 @@ data intake → queue → LoRA training on a rented GPU → quality gate → exp
 packaging (Docker) → serving (FastAPI, Nginx) → monitoring (PostgreSQL, Grafana) → drift detection → retraining →
 CI/CD (GitHub Actions). Details: [docs/llm.md](docs/llm.md).
 
-| | v1 (from the queue, 16 Nov) | v1 under the "harsh" survey (13 Nov) | v2 retrained on harsh (13 Nov) |
+Measured on the server on 16 Nov 2026, with the champion (version 1) serving:
+
+| | 100 healthy live reviews | 300 "harsh" live reviews | Retrained on that batch: 100 held-back reviews (champion on the same) |
 |---|---|---|---|
-| Score MAE | 0.88 | 1.18 (fails the gate) | 0.41 |
-| Recommended accuracy | 92.0% | 89.5% | 95.5% |
+| Score MAE | 0.95 | 1.15 (drift check: DRIFT) | 1.07 (1.18) |
+| Recommended accuracy | 95.0% | 89.0% | 87.0% (85.0%) |
+
+The retrained adapter was better than the champion on the drifted reviews but failed the gate (MAE <= 1.0, recommended
+>= 90%), so it was not registered and version 1 still serves: the drift was detected, not yet fixed. Why, and the
+earlier runs: [docs/llm.md](docs/llm.md#the-gate-and-what-it-measured).
 
 ## Data and licence
 

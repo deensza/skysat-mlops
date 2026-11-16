@@ -90,6 +90,32 @@ on the same gate reviews, logs to MLflow, registers the version if it passes, an
 Real 2019-2022 reviews look like the training reviews to this model (MAE 0.75-0.83 in the 13 Nov runs), so the drift
 in the demo is simulated with `harsh`.
 
+### Through the server's queue, 16 Nov 2026
+
+The first rows above came from files on a PC. These came from the server's queue: 1,996 history reviews were seeded
+(4 of 2,000 posts failed), 100 healthy and 298 harsh reviews arrived as live traffic and were scored by the champion
+(version 1), and the trainer ran twice on a Colab T4 (the trainer only needs HTTPS to the queue and to MLflow).
+
+| Live on the server, champion v1 | Requests | MAE (± 1 standard error) | Recommended | Drift check |
+|---|---|---|---|---|
+| Healthy reviews, flown 2019-01 | 100 | 0.950 ± 0.083 | 95.0% | no drift |
+| Harsh reviews, flown 2019-02 | 300 | 1.150 ± 0.061 | 89.0% | **DRIFT** (on MAE) |
+| Both | 400 | 1.100 ± 0.050 | 90.5% | **DRIFT** |
+
+| Training run | Trained on | Gate reviews | New adapter: MAE / recommended / complaint / combined | Champion v1 on the same reviews | Result |
+|---|---|---|---|---|---|
+| 1 | 1,796 of the 1,996 history reviews, 2,279 s | 200 kept back | 0.97 / 90.5% / 67.5% / 0.824 | 0.89 / 92.5% / 66.5% / 0.830 | passes, registered as version 3; the champion stays (0.830 >= 0.824) |
+| 2 | 298 of the 398 live reviews + 500 replayed history reviews, 1,003 s | 100 kept back | 1.07 / 87.0% / 67.0% / 0.807 | 1.18 / 85.0% / 68.0% / 0.800 | **fails the gate**, not registered; the batch went back to pending |
+
+What run 2 shows. The retrained adapter beat the champion on the drifted reviews (0.807 against 0.800) but did not
+reach the gate, so nothing was registered and version 1 still serves. `harsh` changes the labels and leaves the text as
+it is, and only about three quarters of the 298 new training reviews carried the new labels; the 500 replayed ones and
+the healthy ones carried the old labels for the same kind of text. The v2 of 13 Nov, trained on harsh reviews only,
+reached 0.41. Retraining on the drifted batch without replay (`--replay 0`) has not been run.
+
+On the T4, 1,796 reviews took 2,279 s (322 s on an RTX 4070 Laptop) and PyTorch logged one out-of-memory warning
+(training finished). Colab ships a `torchao` that this `peft` refuses to load next to: `pip uninstall torchao` first.
+
 ## RunPod: the trainer's GPU
 
 `llm/runpod_pod.py` (`make train-remote`) creates a pod through RunPod's REST API (`https://api.runpod.io/v2/pods`),
