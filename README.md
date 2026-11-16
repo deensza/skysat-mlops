@@ -85,7 +85,7 @@ make llm-train                                # v2 from the newest reviews; prom
 | Train + gate + register | `llm/trainer.py` on a RunPod GPU (`llm/runpod_pod.py`) or this PC; MLflow experiment `skysat-llm`, model `skysat-reviews`, alias `champion` |
 | Serve | `api` service (`llm/serve.py`, CPU, 8 GB), behind Nginx: `/score`, `/model`, `/health`, `/docs` |
 | Monitor | `llm_scores` table → Grafana; `GET /scores/recent?hours=N` returns aggregates only |
-| Drift | `llm/drift_check.py`: DRIFT if live MAE > 1.0 or recommended accuracy < 0.90 on >= 50 labelled requests |
+| Drift | `llm/drift_check.py`: DRIFT if live MAE > 1.0 or recommended accuracy < 0.90 by more than the sampling noise, on >= 100 labelled requests |
 | CI/CD | `ci.yml`: tests, compose check, image build, deploy (main only, if switched on) |
 | Retrain | `make train-remote`, or the intake by itself with `AUTO_TRAIN=1`. GitHub has no GPU |
 

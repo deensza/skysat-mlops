@@ -46,9 +46,10 @@ Ideas that hold it together:
 - **The queue decouples arriving data from training.** Reviews keep arriving while nothing trains; a batch that fails
   goes back to pending.
 - **The GPU is rented only while it trains.** `make train-remote` (or the intake with `AUTO_TRAIN=1`) starts a pod on
-  the cheapest free GPU; the pod deletes itself when the trainer exits, and two timers delete it if it does not.
-- **Review text stays private.** It is in the queue's own schema, which Grafana's user cannot read; monitoring stores
-  numbers only.
+  the cheapest free GPU; the pod deletes itself when the trainer exits, and a timer inside the pod deletes it if it does
+  not. `make train-remote` adds the launcher's own deadline (`--wait`); a pod the intake starts has only those two.
+- **Review text stays private.** It is in the queue's own schema, which Grafana's user cannot read on the server (the
+  local stack's Grafana uses the database owner); monitoring stores numbers only.
 
 ## 3. The services (docker-compose.yml)
 
@@ -72,7 +73,8 @@ the read-only Grafana database user and the restart policies ([server.md](server
    reviews, keeps 10% back for the gate, and LoRA-tunes on the rest (1,800 reviews, 322 s on an RTX 4070 Laptop).
 3. The gate (`llm/gate.py`): MAE <= 1.0, recommended >= 0.90, complaint >= 0.65. v1 from the queue: 0.88, 92.0%, 71.5%.
 4. Logged to MLflow (parameters, metrics, the 17 MB adapter), registered as `skysat-reviews`; it becomes `champion` if
-   no champion exists or it beats the champion on the same gate reviews (`combined`). The batch is marked trained.
+   no champion exists or it beats the champion on the same gate reviews (`combined`). The batch is marked trained if a
+   version was registered; if the gate fails it goes back to pending.
 5. The API sees the new alias within `MODEL_RELOAD_SECONDS`, loads the adapter, deletes the old one.
 6. Drift: `make simulate ... SCENARIO=harsh` sends reviews a harsher survey scored; the live MAE rises past the gate,
    and the next batch (those newest reviews) trains a v2 that beats v1 on them.
@@ -107,7 +109,8 @@ Malformed answers are `null` fields and count as wrong in the live measures.
 - No review text or prompt in git, images, MLflow or the monitoring table.
 - Every number in the docs was measured (see [llm.md](llm.md)).
 - A new adapter must beat the champion on the same reviews; otherwise the champion stays.
-- A pod must never outlive its job: self-delete, an in-pod timer, and the launcher's deadline.
+- A pod must never outlive its job: self-delete, an in-pod timer, and the launcher's deadline
+  (`--wait` only: a pod started by the intake has the first two).
 
 ## 9. Known limits
 

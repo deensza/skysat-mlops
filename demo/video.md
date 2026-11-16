@@ -16,7 +16,7 @@ Open points:
 | 1 | 0:00-0:30 | MLflow → Models → `skysat-reviews` | – | "A 1.5B LLM with a 17 MB LoRA adapter, trained in 5 minutes. The gate: MAE 0.91, recommended 94.5%, complaint 68%. Version 1 is the champion." |
 | 2 | 0:30-0:50 | Terminal | `dmake smoke` | "One review through Nginx: score, recommended, main complaint, model version, latency." |
 | 3 | 0:50-1:10 | Grafana | `dmake simulate FROM=2019-01 MONTHS=1 PER_MONTH=30` | "Real 2019 reviews with their true labels. Real drift does not hurt this model: MAE stays under 1." |
-| 4 | 1:10-1:40 | Terminal → Grafana | `dmake simulate FROM=2019-01 MONTHS=1 PER_MONTH=30 SCENARIO=harsh` | "A harsher survey. Live MAE and recommended accuracy cross the red lines: MAE 1.18, recommended 89.5%." |
+| 4 | 1:10-1:40 | Terminal → Grafana | `dmake simulate FROM=2019-01 MONTHS=1 PER_MONTH=150 SCENARIO=harsh` | "A harsher survey. Live MAE and recommended accuracy cross the red lines: MAE 1.18, recommended 89.5%." |
 | 5 | 1:40-2:00 | Terminal | `dmake llm-drift` | "The drift check reads aggregates, never text, and says DRIFT." |
 | 6 | 2:00-2:30 | Terminal → MLflow | `make llm-train` | "Retrain on harsh reviews. Version 2: MAE 0.41, recommended 95.5%. It beats the champion, so it is promoted." |
 | 7 | 2:30-3:00 | Grafana | `dmake simulate FROM=2019-04 MONTHS=1 PER_MONTH=30 SCENARIO=harsh` | "The API loads the new adapter by itself. Version 2 is serving and accuracy recovers." |

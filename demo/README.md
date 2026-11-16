@@ -38,7 +38,7 @@ Open Grafana at http://localhost:3000 (time range **Last 1 hour**, refresh **5s*
 | 2 | Swagger `http://localhost:8001/docs` → `POST /reviews` | a passenger writes a review with their own score; it is queued, then scored by v1 |
 | 3 | Grafana | live MAE / recommended accuracy healthy, model version 1 |
 | 4 | `make simulate FROM=2019-02 PER_MONTH=300 SCENARIO=harsh` | a harsher survey: live MAE and accuracy cross the red lines as the reviews are scored |
-| 5 | `make llm-drift URL=http://localhost:8080` | markdown table, `DRIFT` on at least 50 labelled requests |
+| 5 | `make llm-drift URL=http://localhost:8080` | markdown table, `DRIFT` on at least 100 labelled requests |
 | 6 | `make queue-stats` | the new reviews waiting in the queue |
 | 7 | `make train-remote` (or `make llm-train LLM_MLFLOW=...`) | a RunPod RTX 3070 ($0.13/h) claims the newest batch, trains v2, the gate passes, v2 beats v1 on the same reviews, promoted |
 | 8 | Grafana + `GET /model` | the API loads v2 by itself; accuracy recovers on the next harsh reviews |

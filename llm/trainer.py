@@ -1,14 +1,15 @@
 """Worker 2, the trainer: takes a batch of reviews from the queue, LoRA-tunes, gates, logs and registers.
 
     python -m llm.trainer --queue-url https://<server>        # login: QUEUE_USER / QUEUE_PASSWORD
-    python -m llm.trainer --queue-url http://localhost:8001 --no-mlflow --n 300   # a local trial (the intake)
+    python -m llm.trainer --queue-url http://localhost:8001 --no-mlflow --n 300   # a local trial: batch goes back
 
 Runs where there is a GPU: a RunPod pod started by llm/runpod_pod.py (which deletes the pod when this exits), or a
 local NVIDIA card. Steps:
   1. POST /queue/claim: up to --n pending reviews (the most recently received first) and --replay already-trained ones
   2. 10% of the NEW reviews are kept back for the gate (never trained on); the rest plus the replayed ones train
   3. llm/train_lora.py run(): train, gate, compare with the champion on the same gate reviews, log, register, promote
-  4. POST /queue/done ok=true (the batch is trained), or ok=false on any error (back to pending for the next run)
+  4. POST /queue/done ok=true (the batch is trained) only if a version was registered; ok=false otherwise (the gate
+     failed, --no-mlflow, --keep-pending, any error): the batch goes back to pending for the next run
 Fewer than --min-new pending reviews: nothing is trained and the batch goes straight back.
 """
 
@@ -66,10 +67,10 @@ def parse_args(argv=None):
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--base", default=BASE_MODEL)
     p.add_argument("--out", type=Path, default=DEFAULT_OUT, help="where the adapter is saved")
-    p.add_argument("--no-mlflow", action="store_true", help="train and gate only: log and register nothing")
+    p.add_argument("--no-mlflow", action="store_true", help="train and gate only: register nothing (the batch goes back)")
     p.add_argument("--no-promote", action="store_true", help="register, but leave the champion alias where it is")
     p.add_argument("--keep-pending", action="store_true",
-                   help="put the batch back to pending even if training worked (trials that must not use up the queue)")
+                   help="put the batch back even if a version was registered (trials must not use up the queue)")
     args = p.parse_args(argv)
     if not args.queue_url:
         p.error("give --queue-url or set QUEUE_URL")
@@ -92,7 +93,10 @@ def main(argv=None) -> int:
         result = run(train_rows, gate_rows, args, params={"batch_id": batch_id, "n_new": len(batch["reviews"]),
                                                           "n_replay": len(batch["replay"])})
         print(f"Result: registered={result['registered']} version={result['version']} promoted={result['promoted']}")
-        ok = not args.keep_pending
+        ok = bool(result["registered"]) and not args.keep_pending
+        if not result["registered"]:
+            why = "--no-mlflow: nothing is registered" if args.no_mlflow else "the gate failed"
+            print(f"No version registered ({why}): the batch goes back to pending")
         return 0
     finally:
         if batch["reviews"]:

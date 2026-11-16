@@ -39,7 +39,8 @@ POD_SCRIPT = r"""
 delete_pod() {
   echo "deleting pod $RUNPOD_POD_ID"
   runpodctl pod delete "$RUNPOD_POD_ID" >/dev/null 2>&1 || runpodctl remove pod "$RUNPOD_POD_ID" >/dev/null 2>&1 \
-    || curl -s -X DELETE -H "Authorization: Bearer $RUNPOD_API_KEY" "https://api.runpod.io/v2/pods/$RUNPOD_POD_ID"
+    || curl -sf -X DELETE -H "Authorization: Bearer $RUNPOD_API_KEY" "https://api.runpod.io/v2/pods/$RUNPOD_POD_ID" \
+    || echo "POD DELETE FAILED: delete pod $RUNPOD_POD_ID by hand in the RunPod console"
 }
 ( sleep $((MAX_MINUTES * 60)); echo "TIME LIMIT of $MAX_MINUTES minutes reached"; delete_pod ) &
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
@@ -50,6 +51,12 @@ echo "trainer exit code $?"
 delete_pod
 sleep 600
 """
+
+
+def missing_settings() -> list[str]:
+    """The environment variables a launch needs and does not find."""
+    names = ("RUNPOD_API_KEY", "QUEUE_URL", "QUEUE_USER", "QUEUE_PASSWORD")
+    return [k for k in names if not os.environ.get(k)]
 
 
 def request(method: str, path: str, body: dict | None = None, timeout: float = 60):
@@ -76,7 +83,7 @@ def pod_body(gpu: str, branch: str, trainer_args: str, max_minutes: int, name: s
 def launch(gpus=None, branch: str | None = None, trainer_args: str | None = None, max_minutes: int = 90,
            log=print) -> dict:
     """Creates the pod on the first GPU type that has capacity. Returns the pod as RunPod describes it."""
-    missing = [k for k in ("QUEUE_URL", "QUEUE_USER", "QUEUE_PASSWORD") if not os.environ.get(k)]
+    missing = [k for k in missing_settings() if k.startswith("QUEUE_")]  # request() checks the API key
     if missing:
         raise SystemExit(f"Set {', '.join(missing)}: the pod needs them to reach the queue")
     branch = branch or os.environ.get("TRAIN_BRANCH", "main")

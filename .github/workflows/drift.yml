@@ -1,7 +1,8 @@
 # Drift check on the server's traffic: reads GET /scores/recent (aggregates only: counts, MAE, accuracy, shares; never
 # review text) through the gateway and compares the live MAE and recommended accuracy with the gate in llm/gate.py
-# (MAE <= 1.0, recommended >= 0.90) over at least 50 labelled requests (llm/drift_check.py). The labelled
-# requests are the intake's live traffic: each passenger review, sent to the model with its true labels.
+# (MAE <= 1.0, recommended >= 0.90) over at least 100 labelled requests, and only when it misses by more than the
+# sampling noise (llm/drift_check.py). The labelled requests are the intake's live traffic: each passenger review,
+# sent to the model with its true labels.
 # On drift it opens a GitHub issue. It does NOT retrain on GitHub (no GPU): the trainer runs on a RunPod GPU
 # (`make train-remote`, or by itself when the server's intake has AUTO_TRAIN=1); the new adapter is promoted only
 # if it beats the champion, and the server loads it by itself within minutes.
@@ -51,6 +52,7 @@ jobs:
 
       - name: Drift check
         id: drift
+        # Exit code 2 means the server could not be read: the job fails on purpose, an outage is not "no drift".
         run: |
           export API_USER="${SKYSAT_LOGIN%%:*}" API_PASSWORD="${SKYSAT_LOGIN#*:}"
           python -m llm.drift_check --url "https://$SKYSAT_SERVER" --hours 24
@@ -63,7 +65,7 @@ jobs:
             echo "An issue about this is already open"; exit 0
           fi
           cat > body.md <<EOF
-          The live accuracy of the champion fell below the gate in llm/gate.py (MAE <= 1.0, recommended >= 0.90) over at least 50 labelled requests in the last 24 hours. The table is on the summary page of [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID).
+          The live accuracy of the champion fell below the gate in llm/gate.py (MAE <= 1.0, recommended >= 0.90) over at least 100 labelled requests in the last 24 hours, and by more than the sampling noise. The table is on the summary page of [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID).
 
           Retraining needs a GPU, so it does not run on GitHub. Run \`make train-remote\` (a RunPod pod takes the newest reviews from the queue, trains, and deletes itself). A new adapter is promoted only if it beats the champion.
           EOF

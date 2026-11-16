@@ -38,6 +38,7 @@ SCORE_URL = os.environ.get("SCORE_URL", "")  # e.g. http://api:8000/score; empty
 SCORE_SECONDS = float(os.environ.get("SCORE_SECONDS", "5"))
 SCORE_BATCH = int(os.environ.get("SCORE_BATCH", "5"))
 AUTO_TRAIN = os.environ.get("AUTO_TRAIN", "0") == "1"
+auto_train = AUTO_TRAIN  # switched off at startup if the settings a launch needs are missing
 TRAIN_MIN_PENDING = int(os.environ.get("TRAIN_MIN_PENDING", "500"))
 TRAIN_EVERY_HOURS = float(os.environ.get("TRAIN_EVERY_HOURS", "6"))  # at most one auto-started pod per this long
 
@@ -45,7 +46,8 @@ log = logging.getLogger("uvicorn.error")
 # autocommit: each statement commits at once, so claims never wait on the scoring loop
 db = (ConnectionPool(DATABASE_URL, min_size=1, max_size=4, open=False, kwargs={"autocommit": True})
       if DATABASE_URL else None)
-state = {"scored": 0, "score_errors": 0, "last_error": None, "last_pod": None, "last_pod_at": 0.0}
+state = {"scored": 0, "score_errors": 0, "last_error": None, "last_pod": None, "last_pod_at": 0.0,
+         "last_train_error": None}
 
 
 class Ratings(BaseModel):
@@ -114,14 +116,20 @@ def score_some(conn, n: int) -> int:
 
 
 def maybe_train(conn) -> None:
-    if not AUTO_TRAIN:
+    if not auto_train:
         return
     s = queue_db.stats(conn)
     if s["pending"] < TRAIN_MIN_PENDING or s["claimed"] or time.time() - state["last_pod_at"] < TRAIN_EVERY_HOURS * 3600:
         return
     from llm import runpod_pod
-    pod = runpod_pod.launch(log=log.info)
-    state["last_pod"], state["last_pod_at"] = pod["id"], time.time()
+    state["last_pod_at"] = time.time()  # one attempt per TRAIN_EVERY_HOURS, whether it works or not
+    try:
+        pod = runpod_pod.launch(log=log.info)
+    except (Exception, SystemExit) as err:  # SystemExit: launch() exits when a setting is missing
+        state["last_train_error"] = str(err)
+        log.error("Could not start a trainer pod (next try in %s hours): %s", TRAIN_EVERY_HOURS, err)
+        return
+    state["last_pod"], state["last_train_error"] = pod["id"], None
     log.info("Started trainer pod %s for %d pending reviews", pod["id"], s["pending"])
 
 
@@ -131,11 +139,11 @@ def background() -> None:
         try:
             with db.connection() as conn:
                 if time.time() - last_housekeeping > 300:
+                    last_housekeeping = time.time()  # a failure below is retried in 300 s, not 5 s
                     released = queue_db.release_stale(conn)
                     if released:
                         log.warning("Put %d reviews of a dead batch back to pending", released)
                     maybe_train(conn)
-                    last_housekeeping = time.time()
                 if SCORE_URL:
                     score_some(conn, SCORE_BATCH)
         except Exception as err:
@@ -151,6 +159,13 @@ async def lifespan(app: FastAPI):
     db.open()
     with db.connection() as conn:
         queue_db.create(conn)
+    global auto_train
+    if AUTO_TRAIN:
+        from llm import runpod_pod
+        missing = runpod_pod.missing_settings()
+        if missing:
+            auto_train = False
+            log.error("AUTO_TRAIN=1 but %s not set: auto-training is OFF for this process", ", ".join(missing))
     threading.Thread(target=background, daemon=True).start()
     yield
     db.close()

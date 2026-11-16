@@ -65,7 +65,8 @@ Each review has a fixed id (`kaggle128k:<row>[:scenario]`), so posting it twice 
 - `POST /queue/claim` takes the most recently received pending reviews (the model should learn what passengers say
   now) with `FOR UPDATE SKIP LOCKED`, so two trainers never get the same review, plus `replay` already-trained ones so
   a new adapter does not forget what the last one learned.
-- `POST /queue/done` with `ok: true` marks the batch trained; `ok: false` (the trainer failed) puts it back to pending.
+- `POST /queue/done` with `ok: true` marks the batch trained; `ok: false` puts it back to pending. The trainer sends
+  `true` only if a version was registered (not when it failed, the gate failed, or with `--no-mlflow`).
   A claim older than 3 hours (a pod that died) is put back by the intake.
 
 `llm/trainer.py` claims up to `--n` (2,000) new reviews and `--replay` (500) trained ones. **10% of the new reviews are kept
@@ -110,7 +111,7 @@ make simulate-seed N=2000                     # the first model's training revie
 make llm-train                                # the trainer on this PC (local sqlite MLflow): v1
 make simulate FROM=2019-01 PER_MONTH=100      # normal live passengers: Grafana shows the healthy baseline
 make simulate FROM=2019-02 PER_MONTH=300 SCENARIO=harsh   # the drift: live MAE crosses the line
-make llm-drift URL=http://localhost:8080      # DRIFT on at least 50 labelled requests
+make llm-drift URL=http://localhost:8080      # DRIFT on at least 100 labelled requests
 make llm-train                                # or: make train-remote (RunPod); v2 from the newest reviews
 make queue-stats                              # counts per status
 make train-remote-dry                         # the RunPod request, passwords hidden; starts nothing
@@ -144,8 +145,9 @@ Each answer adds a row to `llm_scores` (`monitoring/init.sql`): `created_at`, `m
 - **Grafana** (`http://localhost:3000`, dashboard `skysat`): requests per hour, latency, live MAE and recommended
   accuracy per hour, complaint shares, model version over time.
 - **`GET /scores/recent?hours=N`**: aggregates only (counts, means, shares, model versions). Never text.
-- **`llm/drift_check.py`** (`make llm-drift`, and `drift.yml` on GitHub) says DRIFT if, on at least 50 labelled
-  requests, the live MAE is above `gate.MAE_MAX` or the live recommended accuracy is below `gate.RECOMMENDED_MIN`.
+- **`llm/drift_check.py`** (`make llm-drift`, and `drift.yml` on GitHub) says DRIFT if, on at least 100 labelled
+  requests, the live MAE is above `gate.MAE_MAX` or the live recommended accuracy is below `gate.RECOMMENDED_MIN`,
+  by more than one standard error of the live sample. If the server cannot be read it exits with code 2.
 
 ## What changes for big models (and what does not)
 

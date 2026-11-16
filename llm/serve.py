@@ -226,13 +226,16 @@ def log_score(row: dict) -> None:
 
 
 # Aggregates only. A malformed score counts as an error of gate.MAX_ERROR (as in the gate), a malformed
-# recommendation as wrong; the labelled counts say how many rows each measure is computed on.
+# recommendation as wrong; mae_sd is the sample standard deviation of the same errors; the labelled counts say how
+# many rows each measure is computed on.
 SUMMARY = """
 SELECT count(*) AS n,
        avg(score) AS mean_score,
        count(true_score) AS labelled_score,
        avg(CASE WHEN true_score IS NULL THEN NULL WHEN score IS NULL THEN %(max_error)s
                 ELSE abs(score - true_score) END) AS mae,
+       stddev_samp(CASE WHEN true_score IS NULL THEN NULL WHEN score IS NULL THEN %(max_error)s
+                        ELSE abs(score - true_score) END) AS mae_sd,
        count(true_recommended) AS labelled_recommended,
        avg(CASE WHEN true_recommended IS NULL THEN NULL
                 WHEN recommended = true_recommended THEN 1.0 ELSE 0.0 END) AS recommended_accuracy
@@ -253,15 +256,15 @@ def _num(value, digits=4):
 
 
 def recent_scores(conn, hours: float) -> dict:
-    """Aggregates over the last `hours` hours of llm_scores: counts, mean score, MAE and recommended accuracy where
-    the true labels were sent, share per complaint. Numbers only, never text."""
+    """Aggregates over the last `hours` hours of llm_scores: counts, mean score, MAE (with its sample standard
+    deviation) and recommended accuracy where the true labels were sent, share per complaint. Numbers only, never text."""
     params = {"hours": hours, "max_error": MAX_ERROR}
     row = conn.execute(SUMMARY, params).fetchone()
-    n, mean_score, labelled_score, mae, labelled_rec, rec_acc = row
+    n, mean_score, labelled_score, mae, mae_sd, labelled_rec, rec_acc = row
     complaints = {name: _num(count / n) for name, count in conn.execute(COMPLAINTS, params).fetchall()} if n else {}
     versions = {str(v): int(count) for v, count in conn.execute(VERSIONS, params).fetchall()}
     return {"hours": hours, "count": int(n), "mean_score": _num(mean_score, 2),
-            "labelled_score": int(labelled_score), "mae": _num(mae),
+            "labelled_score": int(labelled_score), "mae": _num(mae), "mae_sd": _num(mae_sd),
             "labelled_recommended": int(labelled_rec), "recommended_accuracy": _num(rec_acc),
             "complaint_share": complaints, "model_versions": versions}
 

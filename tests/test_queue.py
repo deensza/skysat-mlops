@@ -7,7 +7,7 @@ import uuid
 
 import pytest
 
-from llm import queue_db, runpod_pod
+from llm import intake, queue_db, runpod_pod, trainer
 from llm.intake import ReviewIn, queue_row, score_body
 from llm.trainer import prepare
 
@@ -77,6 +77,7 @@ def test_runpod_request_is_cheap_safe_and_self_deleting(monkeypatch):
     assert body["env"]["TRAINER_ARGS"] == "--n 300" and body["env"]["QUEUE_PASSWORD"] == "secret"
     script = body["cmd"][0]
     assert script.count("delete_pod") >= 3 and "sleep $((MAX_MINUTES * 60))" in script
+    assert "curl -sf" in script and "POD DELETE FAILED: delete pod $RUNPOD_POD_ID by hand" in script
     assert "RUNPOD_API_KEY" not in body["env"]  # the pod uses the key RunPod gives it, never the account's
 
 
@@ -85,6 +86,98 @@ def test_runpod_launch_needs_the_queue_login(monkeypatch):
         monkeypatch.delenv(k, raising=False)
     with pytest.raises(SystemExit):
         runpod_pod.launch()
+
+
+def run_trainer(monkeypatch, n_new, result, *flags):
+    """trainer.main() with the queue and the training faked; returns (the ok posted to /queue/done, run calls)."""
+    posts, runs = [], []
+
+    def fake_call(url, path, body=None, timeout=120):
+        if path == "/queue/done":
+            posts.append(body["ok"])
+        return batch(n_new=n_new, n_replay=0) if path == "/queue/claim" else {"pending": 0}
+
+    def fake_run(*a, **k):
+        runs.append(1)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(trainer, "call", fake_call)
+    monkeypatch.setattr(trainer, "run", fake_run)
+    monkeypatch.setattr(trainer, "prepare", lambda *a: ([], []))
+    trainer.main(["--queue-url", "http://q", "--min-new", "50", *flags])
+    return posts, runs
+
+
+REGISTERED = {"registered": True, "version": "3", "promoted": True}
+NOT_REGISTERED = {"registered": False, "version": None, "promoted": False}
+
+
+def test_trainer_marks_trained_only_when_a_version_was_registered(monkeypatch):
+    assert run_trainer(monkeypatch, 100, REGISTERED)[0] == [True]
+    assert run_trainer(monkeypatch, 100, NOT_REGISTERED)[0] == [False]  # the gate failed
+    assert run_trainer(monkeypatch, 100, NOT_REGISTERED, "--no-mlflow")[0] == [False]
+    assert run_trainer(monkeypatch, 100, REGISTERED, "--keep-pending")[0] == [False]
+
+
+def test_trainer_gives_the_batch_back_when_training_raises(monkeypatch):
+    posts = []
+    monkeypatch.setattr(trainer, "call", lambda url, path, body=None, timeout=120:
+                        posts.append(body["ok"]) or {} if path == "/queue/done" else
+                        batch(n_new=100, n_replay=0) if path == "/queue/claim" else {})
+    monkeypatch.setattr(trainer, "prepare", lambda *a: ([], []))
+    monkeypatch.setattr(trainer, "run", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("out of memory")))
+    with pytest.raises(RuntimeError, match="out of memory"):
+        trainer.main(["--queue-url", "http://q", "--min-new", "50"])
+    assert posts == [False]
+
+
+def test_trainer_with_too_few_new_reviews_trains_nothing(monkeypatch):
+    posts, runs = run_trainer(monkeypatch, 10, REGISTERED)
+    assert posts == [False] and runs == []
+
+
+@pytest.fixture
+def auto(monkeypatch):
+    """maybe_train with auto-training on, enough pending reviews and a fresh state."""
+    monkeypatch.setattr(intake, "auto_train", True)
+    monkeypatch.setattr(intake, "state", {"scored": 0, "score_errors": 0, "last_error": None, "last_pod": None,
+                                          "last_pod_at": 0.0, "last_train_error": None})
+    monkeypatch.setattr(queue_db, "stats", lambda conn: {"pending": 10_000, "claimed": 0})
+    launches = []
+    monkeypatch.setattr(runpod_pod, "launch", lambda log=print: launches.append(1) or {"id": "pod1"})
+    return launches
+
+
+@pytest.mark.parametrize("failure", [SystemExit("Set RUNPOD_API_KEY"), RuntimeError("No GPU had capacity")])
+def test_auto_train_failure_is_recorded_and_not_retried_at_once(monkeypatch, auto, failure):
+    def fail(log=print):
+        auto.append(1)
+        raise failure
+    monkeypatch.setattr(runpod_pod, "launch", fail)
+    intake.maybe_train(None)  # must not raise
+    assert intake.state["last_train_error"] == str(failure) and auto == [1]
+    intake.maybe_train(None)
+    assert auto == [1]  # one attempt per TRAIN_EVERY_HOURS
+
+
+def test_auto_train_success_records_the_pod_and_clears_the_error(auto):
+    intake.state["last_train_error"] = "old"
+    intake.maybe_train(None)
+    assert auto == [1] and intake.state["last_pod"] == "pod1" and intake.state["last_train_error"] is None
+
+
+def test_auto_train_waits_for_enough_pending_reviews(monkeypatch, auto):
+    monkeypatch.setattr(queue_db, "stats", lambda conn: {"pending": 1, "claimed": 0})
+    intake.maybe_train(None)
+    assert auto == []
+
+
+def test_runpod_missing_settings_names_the_api_key_too(monkeypatch):
+    for k in ("RUNPOD_API_KEY", "QUEUE_URL", "QUEUE_USER", "QUEUE_PASSWORD"):
+        monkeypatch.delenv(k, raising=False)
+    assert runpod_pod.missing_settings() == ["RUNPOD_API_KEY", "QUEUE_URL", "QUEUE_USER", "QUEUE_PASSWORD"]
 
 
 # --- The queue's SQL, on a real PostgreSQL -------------------------------------------------------------------
