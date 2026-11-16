@@ -22,7 +22,7 @@ The roadmap lives in the `## Status` checklist of `README.md`. One step = one re
 
 ## Project conventions
 
-- Folder ownership: `data/` dataset only (never committed), `simulator/` traffic sender, `training/` train + retrain + MLflow logging, `api/` FastAPI service, `monitoring/` Grafana + DB setup, `loadtest/` k6, `tests/` pytest, `.github/workflows/` CI/CD.
+- Folder ownership: `data/` dataset only (never committed), `simulator/` traffic sender, `llm/` intake, queue, trainer, train + gate + MLflow logging, FastAPI service, `monitoring/` Grafana + DB setup, `loadtest/` k6, `tests/` pytest, `.github/workflows/` CI/CD.
 - Services are added to `docker-compose.yml` incrementally; each service must start with `docker compose up <service>` on its own where possible.
 - Configuration (URLs, ports, credentials) comes from environment variables with a `.env.example` entry. Real `.env` is gitignored.
 - Code and comments in English; user-facing console messages may stay in whatever language the step already uses.

@@ -17,7 +17,7 @@ Open points (tick when done):
 - [ ] Build the slides from this file (one `##` = one slide; speaker notes under each)
 - [ ] Re-measure the numbers on the final stack before presenting; the server numbers (slide 8) are not measured yet
 - [ ] Record the video ([demo/video.md](../demo/video.md)) and put its link on slide 10
-- [ ] Enable the two schedules (`traffic.yml`, `drift.yml`) for the final run, and say so on slide 9
+- [ ] Enable the schedule in `drift.yml` for the final run, and say so on slide 9
 - [ ] Upload slides (with the GitHub link) and code to Moodle
 - [ ] Rehearse once with a timer (target: ~10 min slides + 3 min video + questions)
 
@@ -63,7 +63,7 @@ Open points (tick when done):
 ## 5. Architecture
 
 See the diagram in [architecture.md](architecture.md): GPU PC → MLflow (adapter) → API on CPU → PostgreSQL → Grafana;
-GitHub replays traffic, checks drift and opens an issue; a person retrains.
+GitHub checks drift and opens an issue; a person retrains.
 
 > Notes: two loops: the training loop (GPU → MLflow) and the serving loop (traffic → API → log → Grafana). Drift
 > detection connects them. Monitoring stores numbers, never review text.
@@ -97,9 +97,10 @@ GitHub replays traffic, checks drift and opens an issue; a person retrains.
 
 - **CI**: tests (no GPU, no model), compose files valid, image built without any model download
 - **CD**: on `main` only, never for pull requests; image to ghcr.io, deploy on the server's runner once it is switched on
-- **traffic.yml** replays live reviews (optionally `harsh`); **drift.yml** checks them and opens the issue "Drift detected:
-  retrain the LoRA adapter (make llm-cycle)". Schedules written, enabled for the final run
-- **Retraining is not on GitHub**: no GPU. A person runs `make llm-cycle`
+- **Traffic** is the simulator run by hand (`make simulate`, optionally `SCENARIO=harsh`); **drift.yml** checks it and
+  opens the issue "Drift detected: retrain the LoRA adapter (make train-remote)". Schedule written, enabled for the
+  final run
+- **Retraining is not on GitHub**: no GPU. A person runs `make train-remote` (RunPod GPU) or `make llm-train` (local GPU)
 
 ## 10. Live demo (video, ~3 min)
 
@@ -121,7 +122,7 @@ Video: *(link)* · Script: [demo/video.md](../demo/video.md)
 ## 12. Summary and questions
 
 - One model, the whole lifecycle: LoRA training, gate, registry, API, monitoring, drift check, CI/CD
-- Reproduce: `make install && make test`, then `make llm-cycle` on a GPU, `make d-up`
+- Reproduce: `make install && make test`, then `make train-remote` (or `make llm-train` on a local GPU), `make d-up`
 - Data: Kaggle joelljungstrom/128k-airline-reviews (DbCL-1.0), scraped from airlinequality.com by the dataset author; never committed
 
 ### Likely questions (prepare an answer)

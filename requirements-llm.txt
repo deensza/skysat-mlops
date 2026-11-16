@@ -1,7 +1,7 @@
-# Complaint-box LLM training (llm/train_lora.py) on a GPU: Colab, or a local NVIDIA card.
-# PyTorch is not pinned here: Colab already has a CUDA build. Locally (Linux), plain PyPI's torch is the CUDA build:
+# Complaint-box LLM training (llm/train_lora.py) on a GPU: a RunPod pod or a local NVIDIA card.
+# PyTorch is not pinned here: the RunPod image has a CUDA build. Locally (Linux), plain PyPI's torch is the CUDA build:
 #   uv venv --python 3.12 .venv-llm && uv pip install --python .venv-llm/bin/python torch==2.14.1 -r requirements-llm.txt
-# numpy/pandas are not pinned either, so Colab's own versions are kept.
+# numpy/pandas are not pinned here. The pod installs its own list (PACKAGES in llm/runpod_pod.py): keep the two in step.
 transformers==5.20.2  # Apache-2.0
 peft==0.21.2          # Apache-2.0
 mlflow==3.17.1

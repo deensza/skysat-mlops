@@ -74,7 +74,7 @@ def train(model, tok, examples: pd.DataFrame, args, dtype):
     """LoRA-tune model on the examples; returns (the peft model, per-step losses)."""
     import torch
     from peft import LoraConfig, get_peft_model
-    # recompute activations in the backward pass: fits 8 GB cards (and a Colab T4) at ~30% more time
+    # recompute activations in the backward pass: fits 8 GB cards (the cheapest RunPod GPU) at ~30% more time
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.enable_input_require_grads()
     model = get_peft_model(model, LoraConfig(

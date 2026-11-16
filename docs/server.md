@@ -2,7 +2,7 @@
 
 Serving and monitoring run on one always-on VM, so they do not depend on a team PC being on. It is the same stack as on a
 PC (the complaint-box `api`, Nginx, PostgreSQL, Grafana), with [docker-compose.server.yml](../docker-compose.server.yml) on
-top. Training happens on a GPU PC or Colab; the adapter and the `champion` alias are in DagsHub.
+top. Training happens on a rented RunPod GPU or a local NVIDIA card; the adapter and the `champion` alias are in DagsHub.
 
 | | |
 |---|---|
