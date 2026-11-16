@@ -27,7 +27,7 @@ make d-down
 export COMPOSE_PROJECT_NAME=skysat-demo
 alias dmake='make MLFLOW_TRACKING_URI= MLFLOW_TRACKING_USERNAME= MLFLOW_TRACKING_PASSWORD='
 dmake d-up && dmake smoke                     # answers once v1 is the champion in the demo MLflow
-dmake llm-replay MONTHS=1 PER_MONTH=30        # healthy baseline in Grafana
+dmake simulate FROM=2019-01 MONTHS=1 PER_MONTH=30        # healthy baseline in Grafana
 ```
 
 Open in tabs: MLflow (http://localhost:5050), Grafana (http://localhost:3000, Last 1 hour), the terminal with a large font.
@@ -36,7 +36,7 @@ Open in tabs: MLflow (http://localhost:5050), Grafana (http://localhost:3000, La
 
 Same scenes as [video.md](video.md). Talk over the waiting:
 
-- While `llm-replay SCENARIO=harsh` runs: "the replay sends real reviews from 2019, rewritten as a harsher survey would
+- While `simulate SCENARIO=harsh` runs: "the simulator sends real reviews from 2019, rewritten as a harsher survey would
   rate them: lower scores, fewer recommendations. The model does not know the world changed."
 - While `llm-drift` runs: "it reads aggregates from the server, no review text, and compares them with the gate."
 - While v2 is shown: "only a 17 MB adapter changed; the API loads it next to the old one, no restart."

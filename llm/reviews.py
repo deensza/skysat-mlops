@@ -1,8 +1,9 @@
 """The complaint box: real airline reviews in, a score, a recommendation and the main complaint out.
 
 Data: Kaggle "joelljungstrom/128k-airline-reviews" (licence DbCL-1.0, scraped from airlinequality.com), the file
-data/reviews/AirlineReviews.csv. It stays on the machine that downloaded it: never committed, never logged to MLflow,
-never in a Docker image, never stored as text in Postgres.
+data/reviews/AirlineReviews.csv. The simulator (simulator/replay.py) posts its reviews one by one to POST /reviews as
+passengers would; they wait in the server's private queue (llm/queue_db.py) until the trainer takes them. Never
+committed, never logged to MLflow, never in a Docker image, never in the table Grafana reads.
 
 The labels come from the reviewers themselves:
   score         OverallScore, 1-10
@@ -10,11 +11,12 @@ The labels come from the reviewers themselves:
   complaints    the sub-ratings (1-5) tied for the lowest rated value if that value is <= 2, else ["none"]
                 (a sub-rating of 0 or empty means "not rated": the CSV stores 0, see rated_values())
 
-Splits (fixed seed, one function: split_reviews):
-  held-out airlines  20% of the airlines, never in training or validation (the gate-on-new-airlines check)
-  train              flown <= 2018, the other airlines
-  validation         a random 10% of those <= 2018 rows, not in train: what the gate scores
-  live               flown >= 2019, all airlines, sorted by date: the traffic after training (replay, drift, retraining)
+Splits of the CSV (fixed seed, split_reviews), used by the simulator to decide what it posts when:
+  held-out airlines  20% of the airlines, never posted as the first model's training reviews
+  train              flown <= 2018, the other airlines: what `simulator.replay --seed-train` posts for the first model
+  validation         a random 10% of those <= 2018 rows, not in train
+  live               flown >= 2019, all airlines, sorted by date: the passengers who write in later (drift, retraining)
+A batch from the queue is split again by split_batch: 10% kept back for the gate.
 
 The prompt (format_prompt) holds the airline, cabin, travel type, title and the review cut to 250 words. No date,
 no label: the model must not be able to read the year or the answer.
@@ -63,7 +65,12 @@ def rated_values(row) -> dict[str, int]:
 
 def complaints(row) -> list[str]:
     """The sub-ratings tied for the lowest rated value if that value is <= 2, else ['none']."""
-    rated = rated_values(row)
+    return complaints_from(rated_values(row))
+
+
+def complaints_from(rated: dict[str, int]) -> list[str]:
+    """complaints() for sub-ratings given by name (seat, service, ...); 0 or missing means not rated."""
+    rated = {k: int(v) for k, v in rated.items() if k in COMPLAINT_NAMES and v is not None and int(v) > 0}
     if not rated or min(rated.values()) > COMPLAINT_MAX:
         return [NONE]
     low = min(rated.values())
@@ -118,26 +125,31 @@ def split_reviews(df: pd.DataFrame, seed: int = 0) -> dict:
             "live": live.reset_index(drop=True), "held_out_airlines": held_out}
 
 
-def split_year(live: pd.DataFrame, year: int, seed: int = 0) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """(train, held-out) for retraining on one live year: a random 10% of that year's reviews is kept for the gate."""
-    rows = live[live["year"] == year]
-    if rows.empty:
-        raise SystemExit(f"ERROR: no live reviews flown in {year}")
-    order = np.random.default_rng(seed).permutation(rows.index.to_numpy())
-    n_val = max(1, round(VALIDATION_SHARE * len(rows)))
-    return rows.drop(order[:n_val]).reset_index(drop=True), rows.loc[np.sort(order[:n_val])].reset_index(drop=True)
+GATE_SHARE = 0.10  # of a training batch from the queue, kept back for the gate
 
 
-def get_split(df: pd.DataFrame, split: str, seed: int = 0) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """(training rows, gate rows) for --split train | live-YYYY."""
-    if split == "train":
-        parts = split_reviews(df, seed)
-        return parts["train"], parts["validation"]
-    m = re.fullmatch(r"live-(\d{4})", split)
-    if not m:
-        raise ValueError("split must be 'train' or 'live-YYYY'")
-    live = split_reviews(df, seed)["live"]
-    return split_year(live, int(m.group(1)), seed)
+def split_batch(df: pd.DataFrame, seed: int = 0, share: float = GATE_SHARE) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(train, gate) for a batch from the queue: a random `share` is kept back for the gate, never trained on."""
+    if len(df) < 2:
+        raise ValueError("need at least 2 reviews to split into train and gate")
+    order = np.random.default_rng(seed).permutation(len(df))
+    n_gate = max(1, round(share * len(df)))
+    return (df.iloc[np.sort(order[n_gate:])].reset_index(drop=True),
+            df.iloc[np.sort(order[:n_gate])].reset_index(drop=True))
+
+
+QUEUE_TO_COLUMNS = {"airline": "AirlineName", "cabin": "CabinType", "travel_type": "TravelType", "title": "Title",
+                    "review": "Review"}
+
+
+def from_queue(rows) -> pd.DataFrame:
+    """Queue rows (llm/queue_db.py) -> the frame format_prompt / build_examples read, with the labels."""
+    df = pd.DataFrame(list(rows))
+    if df.empty:
+        return pd.DataFrame(columns=["id", *QUEUE_TO_COLUMNS.values(), "score", "recommended", "complaints"])
+    df = df.rename(columns=QUEUE_TO_COLUMNS)
+    df["complaints"] = [list(c) if c else [NONE] for c in df["complaints"]]
+    return df
 
 
 def _clean_text(value, default="unknown") -> str:
@@ -177,9 +189,9 @@ def parse_output(text: str) -> dict:
     return out
 
 
-def build_examples(df: pd.DataFrame, n: int, seed: int = 0) -> pd.DataFrame:
-    """n random reviews with `prompt` and `completion` (a tied complaint is picked at random, reproducibly)."""
-    sample = df.sample(n=min(n, len(df)), random_state=seed).reset_index(drop=True)
+def build_examples(df: pd.DataFrame, n: int | None = None, seed: int = 0) -> pd.DataFrame:
+    """n random reviews (all if None) with `prompt` and `completion` (a tied complaint is picked at random, reproducibly)."""
+    sample = df.sample(n=len(df) if n is None else min(n, len(df)), random_state=seed).reset_index(drop=True)
     rng = np.random.default_rng(seed)
     picked = [str(rng.choice(c)) for c in sample["complaints"]]
     return sample.assign(

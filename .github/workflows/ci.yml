@@ -7,7 +7,7 @@
 #           repository variable DEPLOY_TO_RUNNER=true is set: pulls the new image on the server, restarts the
 #           stack and smoke-tests it. Never runs for pull requests (see docs/server.md).
 # The adapter is not part of the image: the API serves whatever MLflow's `skysat-reviews@champion` points to.
-# Nothing trains on GitHub (no GPU): retraining is `make llm-cycle` / `make llm-train` on a GPU machine or Colab.
+# Nothing trains on GitHub (no GPU): the trainer runs on a RunPod GPU (make train-remote, llm/runpod_pod.py).
 name: CI/CD
 
 on:
@@ -23,6 +23,17 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:  # the review queue's SQL is tested against a real one (tests/test_queue.py)
+        image: postgres:17.11-alpine
+        env:
+          POSTGRES_USER: skysat
+          POSTGRES_PASSWORD: skysat
+          POSTGRES_DB: skysat_test
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U skysat" --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql://skysat:skysat@localhost:5432/skysat_test
     steps:
       - uses: actions/checkout@v4
 
@@ -93,5 +104,5 @@ jobs:
       - name: Restart the stack with it
         run: docker compose up -d --no-build
 
-      - name: Smoke test through Nginx  # up to 6 min: a restart is slow on the server's 1 GB of RAM
+      - name: Smoke test through Nginx  # up to 6 min: the API loads a 3 GB base model at start
         run: bash .github/scripts/smoke-test.sh http://localhost:8080 120  # the gateway's port for the server itself

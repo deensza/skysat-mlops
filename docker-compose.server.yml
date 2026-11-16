@@ -24,6 +24,11 @@ services:
       postgres:
         condition: service_healthy
 
+  intake:
+    logging: *small-logs
+    restart: unless-stopped
+    ports: !reset []
+
   # HTTPS with a free certificate that Caddy gets and renews by itself. Port 80 only redirects to 443.
   caddy:
     logging: *small-logs

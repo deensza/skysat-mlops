@@ -1,4 +1,4 @@
-"""The complaint box's data and gate (llm/reviews.py, llm/gate.py, simulator/replay.py). No model, no GPU, no real
+"""The complaint box's data and gate (llm/reviews.py, llm/gate.py, simulator/replay.py, llm/intake.py's body). No model, no GPU, no real
 reviews: a synthetic fixture with the same columns as the Kaggle file."""
 
 import numpy as np
@@ -6,8 +6,8 @@ import pandas as pd
 import pytest
 
 from llm import gate
-from llm.reviews import (COMPLAINT_NAMES, SUB_RATINGS, build_examples, clean_reviews, complaints, format_completion,
-                         format_prompt, get_split, parse_output, split_reviews)
+from llm.reviews import (COMPLAINT_NAMES, SUB_RATINGS, build_examples, clean_reviews, complaints, complaints_from,
+                         format_completion, format_prompt, from_queue, parse_output, split_batch, split_reviews)
 from simulator.replay import pick_reviews, request_body
 
 MONTHS = ["January", "March", "June", "September", "December"]
@@ -162,15 +162,27 @@ def test_build_examples_labels_match_the_row(reviews):
     assert again["completion"].tolist() == ex["completion"].tolist()
 
 
-def test_get_split_train_and_live_year(reviews):
-    train, val = get_split(reviews, "train")
-    assert train["year"].max() <= 2018 and len(val)
-    live_train, live_val = get_split(reviews, "live-2020")
-    assert set(live_train["year"]) == {2020} and set(live_val["year"]) == {2020}
-    assert not set(live_train["Title"]) & set(live_val["Title"])
-    assert abs(len(live_val) / (len(live_val) + len(live_train)) - 0.10) < 0.01
+def test_split_batch_keeps_a_disjoint_gate(reviews):
+    train, gate_rows = split_batch(reviews, seed=0)
+    assert len(gate_rows) == round(0.1 * len(reviews)) and len(train) + len(gate_rows) == len(reviews)
+    assert not set(train["Title"]) & set(gate_rows["Title"])
+    assert list(split_batch(reviews, seed=0)[1]["Title"]) == list(gate_rows["Title"])  # reproducible
     with pytest.raises(ValueError):
-        get_split(reviews, "test")
+        split_batch(reviews.head(1))
+
+
+def test_complaints_from_named_ratings():
+    assert complaints_from({"food": 1, "wifi": 1, "seat": 4}) == ["food", "wifi"]
+    assert complaints_from({"food": 3}) == ["none"] and complaints_from({}) == ["none"]
+    assert complaints_from({"food": 0, "seat": 2, "nonsense": 1}) == ["seat"]  # 0 = not rated; unknown names ignored
+
+
+def test_from_queue_gives_the_prompt_columns():
+    rows = [{"id": "x", "airline": "A", "cabin": "Economy Class", "travel_type": "Business", "title": "T",
+             "review": "Cold food.", "flown": "2019-01-01", "score": 3, "recommended": "no", "complaints": ["food"]}]
+    df = from_queue(rows)
+    assert format_prompt(df.iloc[0].to_dict()).startswith("Airline: A\nCabin: Economy Class\nTravel type: Business")
+    assert df.iloc[0]["complaints"] == ["food"] and from_queue([]).empty
 
 
 def perfect_texts(rows: pd.DataFrame) -> list[str]:
@@ -224,9 +236,17 @@ def test_replay_picks_live_reviews_in_date_order(parts):
     batch = pick_reviews(live, pd.Timestamp("2019-01-01"), months=3, per_month=10)
     assert batch["date"].is_monotonic_increasing and len(batch) <= 30
     assert batch["date"].min() >= pd.Timestamp("2019-01-01") and batch["date"].max() < pd.Timestamp("2019-04-01")
-    body = request_body(batch.iloc[0])
-    assert set(body) == {"airline", "cabin", "travel_type", "title", "review", "true_score", "true_recommended"}
-    assert isinstance(body["true_score"], int) and body["true_recommended"] in ("yes", "no")
+
+
+def test_replay_posts_what_the_intake_accepts(parts):
+    from llm.intake import ReviewIn, queue_row
+    row = parts["live"].iloc[0]
+    body = request_body(row)
+    req = ReviewIn(**body)  # the intake's own validation
+    assert req.score == int(row["score"]) and req.recommended == row["recommended"] and req.live
+    assert queue_row(req)["complaints"] == complaints(row)
+    assert request_body(row, "harsh")["review_id"] == body["review_id"] + ":harsh"  # drifted copy is a new review
+    assert request_body(row, live=False)["live"] is False
 
 
 def test_promote_moves_the_champion_alias(tmp_path, monkeypatch, capsys):

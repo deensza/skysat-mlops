@@ -141,6 +141,22 @@ def test_new_champion_is_a_new_adapter_on_the_same_base(fake, tmp_path, monkeypa
     assert not (tmp_path / "download-2").exists()  # the downloaded adapter is deleted once in memory
 
 
+def test_a_registry_that_gives_int_versions_still_loads(fake, tmp_path, monkeypatch):
+    """A local sqlite MLflow returns ModelVersion.version as an int (DagsHub: a str); found 2026-11-16."""
+    mlflow = pytest.importorskip("mlflow")
+    from llm import train_lora
+    monkeypatch.setattr(mlflow.artifacts, "download_artifacts",
+                        lambda artifact_uri, dst_path: str(write_adapter(tmp_path / "dl")))
+    client = SimpleNamespace(get_model_version_by_alias=lambda name, alias: SimpleNamespace(version=3, source="x"))
+    version, _ = train_lora.champion_adapter(client, serve.BASE_MODEL)
+    assert version == "3"
+    monkeypatch.setattr(serve, "ADAPTER_DIR", None)
+    monkeypatch.setattr(serve, "mlflow_client", lambda: client)
+    monkeypatch.setattr(serve, "champion_adapter", lambda c, base: ("3", str(write_adapter(tmp_path / "dl2"))))
+    serve.serving.refresh()
+    assert serve.health()["model_version"] == "3"
+
+
 class FakePool:
     def __init__(self, fail=False):
         self.fail, self.executed = fail, []
@@ -215,10 +231,10 @@ class FakeConn:
 
 
 def test_recent_scores_are_aggregates_only():
-    conn = FakeConn((200, 6.2345, 180, 0.7777, 190, 0.9473), [("food", 100), ("none", 80), ("malformed", 20)],
+    conn = FakeConn((200, 6.2345, 180, 0.7777, 1.2345, 190, 0.9473), [("food", 100), ("none", 80), ("malformed", 20)],
                     [("1", 120), ("2", 80)])
     out = serve.recent_scores(conn, 24)
-    assert out == {"hours": 24, "count": 200, "mean_score": 6.23, "labelled_score": 180, "mae": 0.7777,
+    assert out == {"hours": 24, "count": 200, "mean_score": 6.23, "labelled_score": 180, "mae": 0.7777, "mae_sd": 1.2345,
                    "labelled_recommended": 190, "recommended_accuracy": 0.9473,
                    "complaint_share": {"food": 0.5, "none": 0.4, "malformed": 0.1},
                    "model_versions": {"1": 120, "2": 80}}
@@ -229,8 +245,8 @@ def test_recent_scores_are_aggregates_only():
 
 
 def test_recent_scores_with_no_traffic():
-    out = serve.recent_scores(FakeConn((0, None, 0, None, 0, None), [], []), 1)
-    assert out["count"] == 0 and out["mae"] is None and out["complaint_share"] == {}
+    out = serve.recent_scores(FakeConn((0, None, 0, None, None, 0, None), [], []), 1)
+    assert out["count"] == 0 and out["mae"] is None and out["mae_sd"] is None and out["complaint_share"] == {}
 
 
 def test_scores_recent_needs_the_database(monkeypatch):
@@ -241,7 +257,7 @@ def test_scores_recent_needs_the_database(monkeypatch):
 
 
 def test_scores_recent_reads_through_the_pool(monkeypatch):
-    conn = FakeConn((3, 7.0, 3, 1.0, 3, 1.0), [("food", 3)], [("1", 3)])
+    conn = FakeConn((3, 7.0, 3, 1.0, 0.5, 3, 1.0), [("food", 3)], [("1", 3)])
 
     class Pool:
         def connection(self, timeout=None):
