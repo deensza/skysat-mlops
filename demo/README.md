@@ -3,8 +3,8 @@
 Recorded as a video beforehand (waiting moments cut) and narrated live, after the slides. The story: **passengers'
 reviews arrive, the model degrades on them, the system notices, a GPU retrains it from the queue, the new model
 goes live by itself.** The demo stack runs on one PC and trains on that PC's GPU. The rented RunPod GPU is shown from
-the recorded runs of 17 Nov 2026 on GitHub: a pod needs a queue address it can reach from the internet, and it would
-write to the team's registry.
+the recorded run of 17 Nov 2026 on GitHub (step 9): a pod needs a queue address it can reach from the internet, and it
+would write to the team's registry.
 
 ## Keep the demo away from the team's registry
 
@@ -45,7 +45,7 @@ Open Grafana at http://localhost:3000 (time range **Last 1 hour**, refresh **5s*
 | 6 | `make queue-stats` | the new reviews waiting in the queue. Wait until `ready` is 300 or more: a review can be trained on only after the model has scored it, and the trainer needs 300 new ones |
 | 7 | `make llm-train LLM_MLFLOW=http://localhost:5050 ARGS="--replay 0 --epochs 3"` | this PC's GPU claims the newest batch, trains v2 on the new reviews only, the gate passes, v2 beats v1 on the same reviews, promoted |
 | 8 | Grafana + `GET /model` | the API loads v2 by itself; accuracy recovers on the next harsh reviews |
-| 9 | GitHub → Actions → Train, a run of 17 Nov 2026 | the same trainer on a rented RunPod RTX 3070 ($0.13/h): "Pod ... created", "Pod ... is gone" about 5 minutes later, "Trainer pods left behind: 0". The GPU existed only while it trained |
+| 9 | GitHub → Actions → Drift check, run 44111118456 of 17 Nov 2026 | the same loop on the server, with a rented GPU: the drift table says DRIFT; in the job `retrain / train`, "Pod ... created on NVIDIA GeForce RTX 3080 Ti", "Pod ... is gone" 5 min 32 s later, "serving model 4 -> 6", "Trainer pods left behind: 0". The GPU ($0.18/h) existed only while it trained |
 
 - Step 7 takes about 5 minutes on an RTX 4070 (v1 took 322 s; time the retraining at the rehearsal); film it
   beforehand and cut the wait.

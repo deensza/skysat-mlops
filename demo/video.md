@@ -30,8 +30,8 @@ Open points:
 - Scene 6 needs both additions. `LLM_MLFLOW=http://localhost:5050` trains into the demo stack's MLflow, the one the
   demo API reads; plain `make llm-train` writes to a sqlite file it does not read. `--replay 0 --epochs 3` trains on
   the new reviews only; the default (500 replayed reviews, one epoch) failed the gate on drifted reviews on 16 Nov.
-- The rented GPU is not in the video's live part: show a Train run of 17 Nov 2026 on GitHub as a still
-  ([README.md](README.md), step 9).
+- The rented GPU is not in the video's live part: show the Drift check run of 17 Nov 2026 on GitHub that rented one
+  as a still ([README.md](README.md), step 9).
 - Use `dmake` and the local MLflow so the team's champion is never touched.
 
 ## Recording checklist
