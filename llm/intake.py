@@ -21,6 +21,7 @@ import logging
 import os
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 from contextlib import asynccontextmanager
@@ -42,13 +43,15 @@ AUTO_TRAIN = os.environ.get("AUTO_TRAIN", "0") == "1"
 auto_train = AUTO_TRAIN  # switched off at startup if the settings a launch needs are missing
 TRAIN_MIN_PENDING = int(os.environ.get("TRAIN_MIN_PENDING", "500"))
 TRAIN_EVERY_HOURS = float(os.environ.get("TRAIN_EVERY_HOURS", "6"))  # at most one auto-started pod per this long
+GIVE_UP_AFTER = 3  # tries before a review the API cannot answer is left out of the live traffic
 
 log = logging.getLogger("uvicorn.error")
 # autocommit: each statement commits at once, so claims never wait on the scoring loop
 db = (ConnectionPool(DATABASE_URL, min_size=1, max_size=4, open=False, kwargs={"autocommit": True})
       if DATABASE_URL else None)
-state = {"scored": 0, "score_errors": 0, "last_error": None, "last_pod": None, "last_pod_at": 0.0,
+state = {"scored": 0, "score_errors": 0, "given_up": 0, "last_error": None, "last_pod": None, "last_pod_at": 0.0,
          "last_train_error": None}
+failures: dict[str, int] = {}  # review id -> times the API failed on this very review
 
 
 class Ratings(BaseModel):
@@ -106,12 +109,24 @@ def score_some(conn, n: int) -> int:
         try:
             with urllib.request.urlopen(req, timeout=150) as resp:
                 resp.read()
-        except Exception as err:  # the API is loading, busy or has no champion yet: try again next round
+        except Exception as err:
             state["score_errors"] += 1
             state["last_error"] = str(err)
-            break
+            # No connection or a 503: the API is down, loading or has no champion yet. No review's fault: wait.
+            its_own = isinstance(err, (urllib.error.HTTPError, TimeoutError)) and getattr(err, "code", None) != 503
+            failures[row["id"]] = failures.get(row["id"], 0) + its_own
+            if failures[row["id"]] < GIVE_UP_AFTER:
+                break  # try again next round
+            # The API fails on this review every time (too long for its time limit, or refused). Reviews are scored
+            # oldest first and claimed only once scored, so it would hold up all scoring and all training behind it:
+            # leave it out of the live traffic. It was never measured, so it can still be trained on.
+            log.warning("Review %s: the API failed %d times (%s); left out of the live traffic", row["id"],
+                        GIVE_UP_AFTER, err)
+            state["given_up"] += 1
+        else:
+            done += 1
+        failures.pop(row["id"], None)
         queue_db.mark_scored(conn, row["id"])
-        done += 1
     state["scored"] += done
     return done
 
@@ -119,8 +134,8 @@ def score_some(conn, n: int) -> int:
 def maybe_train(conn) -> None:
     if not auto_train:
         return
-    s = queue_db.stats(conn)
-    if s["pending"] < TRAIN_MIN_PENDING or s["claimed"] or time.time() - state["last_pod_at"] < TRAIN_EVERY_HOURS * 3600:
+    s = queue_db.stats(conn, scored_only=bool(SCORE_URL))
+    if s["ready"] < TRAIN_MIN_PENDING or s["claimed"] or time.time() - state["last_pod_at"] < TRAIN_EVERY_HOURS * 3600:
         return
     from llm import runpod_pod
     state["last_pod_at"] = time.time()  # one attempt per TRAIN_EVERY_HOURS, whether it works or not
@@ -131,7 +146,7 @@ def maybe_train(conn) -> None:
         log.error("Could not start a trainer pod (next try in %s hours): %s", TRAIN_EVERY_HOURS, err)
         return
     state["last_pod"], state["last_train_error"] = pod["id"], None
-    log.info("Started trainer pod %s for %d pending reviews", pod["id"], s["pending"])
+    log.info("Started trainer pod %s for %d reviews ready to train on", pod["id"], s["ready"])
 
 
 def background() -> None:
@@ -218,8 +233,7 @@ def done(req: DoneRequest):
 @app.get("/queue/stats")
 def stats():
     with db.connection() as conn:
-        s = queue_db.stats(conn)
-    s["ready"] = s["pending"] - (s["unscored"] if SCORE_URL else 0)
+        s = queue_db.stats(conn, scored_only=bool(SCORE_URL))
     return s | {"intake": {k: v for k, v in state.items() if k != "last_pod_at"}}
 
 

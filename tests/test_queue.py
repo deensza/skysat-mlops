@@ -2,6 +2,8 @@
 TEST_DATABASE_URL names a *_test database: CI starts one), the intake's request model (llm/intake.py), the trainer's
 batch preparation (llm/trainer.py) and the RunPod request (llm/runpod_pod.py)."""
 
+import io
+import json
 import os
 import uuid
 
@@ -150,8 +152,8 @@ def auto(monkeypatch):
     """maybe_train with auto-training on, enough pending reviews and a fresh state."""
     monkeypatch.setattr(intake, "auto_train", True)
     monkeypatch.setattr(intake, "state", {"scored": 0, "score_errors": 0, "last_error": None, "last_pod": None,
-                                          "last_pod_at": 0.0, "last_train_error": None})
-    monkeypatch.setattr(queue_db, "stats", lambda conn: {"pending": 10_000, "claimed": 0})
+                                          "last_pod_at": 0.0, "last_train_error": None, "given_up": 0})
+    monkeypatch.setattr(queue_db, "stats", lambda conn, scored_only=False: {"pending": 10_000, "ready": 10_000, "claimed": 0})
     launches = []
     monkeypatch.setattr(runpod_pod, "launch", lambda log=print: launches.append(1) or {"id": "pod1"})
     return launches
@@ -175,10 +177,63 @@ def test_auto_train_success_records_the_pod_and_clears_the_error(auto):
     assert auto == [1] and intake.state["last_pod"] == "pod1" and intake.state["last_train_error"] is None
 
 
-def test_auto_train_waits_for_enough_pending_reviews(monkeypatch, auto):
-    monkeypatch.setattr(queue_db, "stats", lambda conn: {"pending": 1, "claimed": 0})
+def test_auto_train_waits_for_enough_reviews_the_model_has_scored(monkeypatch, auto):
+    monkeypatch.setattr(queue_db, "stats", lambda conn, scored_only=False: {"pending": 10_000, "ready": 1, "claimed": 0})
     intake.maybe_train(None)
     assert auto == []
+
+
+class FakeApi:
+    """Stands in for the model API behind intake.score_some: `bad` maps a review text to the error it always gets."""
+
+    def __init__(self, bad):
+        self.bad, self.asked = bad, []
+
+    def __call__(self, req, timeout=None):
+        text = json.loads(req.data)["review"]
+        self.asked.append(text)
+        if text in self.bad:
+            raise self.bad[text]
+        return io.BytesIO(b"{}")
+
+
+@pytest.fixture
+def scoring(monkeypatch):
+    """score_some against a queue of 4 unscored reviews held in memory; returns (score a round, the scored ids)."""
+    waiting = [queue_row(ReviewIn(**review(review_id=f"r{i}", review=f"review {i}"))) for i in range(4)]
+    scored = []
+    monkeypatch.setattr(queue_db, "to_score", lambda conn, n: [r for r in waiting if r["id"] not in scored][:n])
+    monkeypatch.setattr(queue_db, "mark_scored", lambda conn, review_id: scored.append(review_id))
+    monkeypatch.setattr(intake, "state", {"scored": 0, "score_errors": 0, "given_up": 0, "last_error": None})
+    monkeypatch.setattr(intake, "failures", {})
+    monkeypatch.setattr(intake, "SCORE_URL", "http://api:8000/score")
+
+    def round_(api):
+        monkeypatch.setattr(intake.urllib.request, "urlopen", api)
+        return intake.score_some(None, 5)
+    return round_, scored
+
+
+@pytest.mark.parametrize("error", [TimeoutError("timed out"),
+                                   intake.urllib.error.HTTPError("u", 422, "Unprocessable", None, None)])
+def test_one_review_the_api_cannot_answer_does_not_hold_up_the_rest(scoring, error):
+    round_, scored = scoring
+    api = FakeApi({"review 0": error})
+    assert [round_(api), round_(api)] == [0, 0] and scored == []  # two tries: still waiting on the oldest review
+    assert round_(api) == 3  # third try: it is left out, the three behind it are scored
+    assert scored == ["r0", "r1", "r2", "r3"] and intake.state["given_up"] == 1 and intake.state["scored"] == 3
+    assert api.asked.count("review 0") == 3
+
+
+@pytest.mark.parametrize("error", [intake.urllib.error.HTTPError("u", 503, "No model loaded yet", None, None),
+                                   intake.urllib.error.URLError("connection refused")])
+def test_an_api_that_is_down_makes_the_intake_wait_and_give_up_on_nothing(scoring, error):
+    round_, scored = scoring
+    api = FakeApi({f"review {i}": error for i in range(4)})
+    assert [round_(api) for _ in range(6)] == [0] * 6
+    assert scored == [] and intake.state["given_up"] == 0 and intake.state["score_errors"] == 6
+    assert round_(FakeApi({})) == 4  # the API is back: everything is scored, in order
+    assert scored == ["r0", "r1", "r2", "r3"]
 
 
 def test_runpod_missing_settings_names_the_api_key_too(monkeypatch):
@@ -317,6 +372,49 @@ def test_runpod_launch_sweeps_when_the_answer_to_create_is_lost(monkeypatch, no_
 def test_runpod_outcome_without_the_pod_log_comes_from_the_server(monkeypatch, no_waiting, before, after, expected):
     monkeypatch.setattr(runpod_pod, "server_state", lambda: after)
     assert runpod_pod.outcome_from_server(before, log=lambda s: None) == expected
+
+
+class BrokenStream:
+    """A log stream that breaks in the middle of a read (http.client.IncompleteRead is not an OSError)."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def __iter__(self):
+        yield b'data: {"ts": "1", "line": "step 25/447"}\n'
+        raise runpod_pod.http.client.IncompleteRead(b"")
+
+
+def test_runpod_a_broken_log_stream_does_not_end_the_wait(monkeypatch):
+    monkeypatch.setenv("RUNPOD_API_KEY", "k")
+    monkeypatch.setattr(runpod_pod.urllib.request, "urlopen", lambda req, timeout=None: BrokenStream())
+    seen, said = set(), []
+    runpod_pod._print_logs("p1", seen, said.append)  # must not raise: follow() would delete a pod that is still training
+    assert seen == {("1", "step 25/447")} and said == ["  pod | step 25/447"]
+
+
+def test_runpod_delete_survives_an_answer_that_is_not_json(monkeypatch, no_waiting):
+    def not_json(method, path, body=None, timeout=60):
+        raise ValueError("Expecting value")
+    monkeypatch.setattr(runpod_pod, "request", not_json)
+    said = []
+    assert runpod_pod.delete("p1", log=said.append) is False
+    assert said[-1] == "POD DELETE FAILED: delete pod p1 by hand in the RunPod console" and len(said) == 4
+
+
+def test_runpod_outcome_reads_the_log_in_time_order():
+    seen = {("2026-11-17T06:30:02Z", "trainer exit code 0"), ("2026-11-17T06:20:00Z", "trainer exit code 1")}
+    lines = [line for _, line in sorted(seen, key=lambda mark: str(mark[0]))]
+    assert runpod_pod.outcome(lines)["exit_code"] == 0  # the later line wins (a restarted container)
+
+
+def test_trainer_args_may_be_a_single_flag(monkeypatch, capsys):
+    monkeypatch.setattr(runpod_pod.sys, "argv", ["runpod_pod", "--dry-run", "--trainer-args=--keep-pending"])
+    assert runpod_pod.main() == 0
+    assert '"TRAINER_ARGS": "--keep-pending"' in capsys.readouterr().out
 
 
 def test_runpod_sweep_deletes_only_trainer_pods(monkeypatch, no_waiting):

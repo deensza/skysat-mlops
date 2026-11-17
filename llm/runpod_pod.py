@@ -25,6 +25,7 @@ RunPod gives every pod RUNPOD_POD_ID and a key scoped to that pod, which the pod
 
 import argparse
 import base64
+import http.client
 import json
 import os
 import re
@@ -42,7 +43,9 @@ PASS_ENV = ["QUEUE_URL", "QUEUE_USER", "QUEUE_PASSWORD",
             "MLFLOW_TRACKING_URI", "MLFLOW_TRACKING_USERNAME", "MLFLOW_TRACKING_PASSWORD"]
 PACKAGES = "transformers==5.20.2 peft==0.21.2 mlflow-skinny==3.17.1 pandas==2.2.3"
 POD_NAME = "skysat-trainer"
-DEAD = ("EXITED", "ERROR", "FAILED", "TERMINATED")  # pod states in which the container no longer runs
+DEAD = ("EXITED", "ERROR", "TERMINATED")  # pod states (RunPod's `status`) in which the container no longer runs
+# what a request can raise when the network or the answer breaks (IncompleteRead is not an OSError)
+NETWORK = (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException)
 
 # Runs inside the pod. Every way out ends in delete_pod; the background timer is the last resort.
 POD_SCRIPT = r"""
@@ -109,7 +112,7 @@ def launch(gpus=None, branch: str | None = None, trainer_args: str | None = None
                 raise RuntimeError(f"RunPod refused the API key: {errors[-1]}") from None
             log(f"No {gpu}: {errors[-1]}")
             continue
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as err:
+        except (*NETWORK, ValueError) as err:
             # the answer was lost: the pod may exist without this process knowing its id
             log(f"Creating the pod failed without an answer ({err}): deleting any trainer pod that was made")
             sweep(log)
@@ -130,7 +133,7 @@ def delete(pod_id: str, log=print) -> bool:
             if err.code == 404:
                 return True
             log(f"Deleting pod {pod_id}: {err.code}")
-        except (urllib.error.URLError, TimeoutError, OSError) as err:
+        except (*NETWORK, ValueError) as err:  # ValueError: an answer that is not JSON
             log(f"Deleting pod {pod_id}: {err}")
         time.sleep(5)
     log(f"POD DELETE FAILED: delete pod {pod_id} by hand in the RunPod console")
@@ -168,7 +171,7 @@ def follow(pod_id: str, max_minutes: int, log=print) -> dict:
                     gone = True
                     break
                 log(f"Reading the pod: {err.code}")
-            except (urllib.error.URLError, TimeoutError, OSError) as err:
+            except (*NETWORK, ValueError) as err:
                 log(f"Reading the pod: {err}")  # the network blinked: the deadline below still holds
             if time.time() > deadline:
                 log(f"{max_minutes} minutes passed")
@@ -178,7 +181,7 @@ def follow(pod_id: str, max_minutes: int, log=print) -> dict:
     finally:
         if not gone:
             delete(pod_id, log)
-    return outcome(line for _, line in seen)
+    return outcome(line for _, line in sorted(seen, key=lambda mark: str(mark[0])))  # in time order
 
 
 def server_state() -> dict | None:
@@ -195,7 +198,7 @@ def server_state() -> dict | None:
             if key == "trained" or err.code != 503:  # 503 on /model: no model loaded yet
                 return None
             state[key] = None
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        except (*NETWORK, ValueError):
             return None
     return state
 
@@ -203,7 +206,9 @@ def server_state() -> dict | None:
 def outcome_from_server(before: dict | None, log=print) -> dict:
     """When the pod's log could not be read (the API key may not be allowed to): what the server says happened.
     A batch is marked trained only if a version was registered, and the API loads a new champion within a minute.
-    Without a registration the exit code stays unknown: a failed gate, too few reviews and a crash look the same."""
+    Without a registration the exit code stays unknown: a failed gate, too few reviews and a crash look the same.
+    It reads counts, not this run's own result: a trial with --keep-pending registers without marking the batch
+    trained (reported as not registered), and another trainer finishing in the same minutes would be counted."""
     out = {"exit_code": None, "registered": None, "version": None, "promoted": None}
     after = server_state()
     if not before or not after or before["trained"] is None or after["trained"] is None:
@@ -275,7 +280,7 @@ def _print_logs(pod_id: str, seen: set, log) -> None:
                     break
     except urllib.error.HTTPError as err:
         _once(log, f"Pod log: HTTP {err.code} {err.read().decode(errors='replace').strip()[:200]}")
-    except (urllib.error.URLError, TimeoutError, OSError) as err:
+    except NETWORK as err:
         if not got:  # nothing at all: no log yet (the image is still being pulled), or the stream does not answer
             _once(log, f"Pod log: nothing received ({type(err).__name__}: {err})")
 
