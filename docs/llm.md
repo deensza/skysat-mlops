@@ -65,6 +65,10 @@ Each review has a fixed id (`kaggle128k:<row>[:scenario]`), so posting it twice 
 - `POST /queue/claim` takes the most recently received pending reviews (the model should learn what passengers say
   now) with `FOR UPDATE SKIP LOCKED`, so two trainers never get the same review, plus `replay` already-trained ones so
   a new adapter does not forget what the last one learned.
+- A live review is traffic first and training data after: it can be claimed only once the model has scored it
+  (`scored_at`), so every live review is measured exactly once, by a model that never trained on it. `GET /queue/stats`
+  gives `ready`, the pending reviews a trainer could take now; the Train workflow needs 300 of them. Before 17 Nov
+  2026 a trainer could claim reviews the model had not scored yet, and those never showed up as live traffic.
 - `POST /queue/done` with `ok: true` marks the batch trained; `ok: false` puts it back to pending. The trainer sends
   `true` only if a version was registered (not when it failed, the gate failed, or with `--no-mlflow`).
   A claim older than 3 hours (a pod that died) is put back by the intake.

@@ -2,7 +2,8 @@
 # `python3 -m llm.runpod_pod` does the work: the trainer takes a batch of pending reviews, trains, runs the gate,
 # registers the model in MLflow and promotes it only if it beats the champion. The server then loads the new
 # champion by itself within a minute. The run's summary page shows the queue and the serving version before and after.
-# It never trains with fewer than 300 pending reviews (no pod is started), and a run started by the drift check
+# It never trains with fewer than 300 pending reviews that the model has already scored as live traffic (no pod is
+# started; a review is traffic first and training data after), and a run started by the drift check
 # (reason other than "by hand") waits for the cooldown (TRAIN_COOLDOWN_HOURS, default 6) after the last run that
 # rented a GPU. A run that found no free GPU rented nothing and does not count.
 # Never two runs at once. A last step deletes any trainer pod that is still there; if it finds one, the run fails.
@@ -151,13 +152,15 @@ jobs:
           STATS="$stats" MODEL="$model" python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json, os
           s = json.loads(os.environ["STATS"])
+          ready = s.get("ready", s["pending"])  # pending reviews the model has already scored as live traffic
           print("pending=%d" % s["pending"])
           print("trained=%d" % s["trained"])
           print("model=%s" % json.loads(os.environ["MODEL"]).get("version"))
-          if s["pending"] < 300:
+          if ready < 300:
               print("skip=true")
               with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
-                  f.write("Too few new reviews to train (%d pending, 300 needed): no pod was started.\n" % s["pending"])
+                  f.write("Too few new reviews to train (%d pending, %d of them already scored live, 300 needed): "
+                          "no pod was started.\n" % (s["pending"], ready))
           PY
 
       # 45 minutes at the dearest GPU in the list ($0.22/h) is at most about $0.17 per run.

@@ -7,6 +7,10 @@ a claim older than STALE_HOURS (a trainer pod that died) is put back by the inta
 received reviews first (the model should learn what passengers say now) and use FOR UPDATE SKIP LOCKED, so two
 trainers never get the same review.
 
+A live review is first sent to the model as traffic (scored_at) and only then can be claimed for training: every
+live review is measured once, by a model that has not trained on it. Training-only reviews (the first model's)
+have scored_at set when they arrive.
+
 The table is in its own schema `queue`: other database users (Grafana's read-only `grafana_reader`) get no USAGE on
 it, so the dashboard can never read review text.
 """
@@ -46,7 +50,7 @@ OUT = "r.id, r.airline, r.cabin, r.travel_type, r.title, r.review, r.flown, r.sc
 
 CLAIM = f"""
 WITH picked AS (
-    SELECT id FROM queue.reviews WHERE status = 'pending'
+    SELECT id FROM queue.reviews WHERE status = 'pending' AND (NOT %(scored_only)s OR scored_at IS NOT NULL)
     ORDER BY received_at DESC, id LIMIT %(n)s FOR UPDATE SKIP LOCKED
 )
 UPDATE queue.reviews r SET status = 'claimed', batch_id = %(batch_id)s, claimed_at = now()
@@ -97,10 +101,11 @@ def insert(conn, rows: list[dict]) -> int:
     return added
 
 
-def claim(conn, batch_id: str, n: int, replay: int = 0) -> dict:
-    """Up to n pending reviews for this batch (now claimed), newest first, plus up to `replay` already-trained ones."""
+def claim(conn, batch_id: str, n: int, replay: int = 0, scored_only: bool = False) -> dict:
+    """Up to n pending reviews for this batch (now claimed), newest first, plus up to `replay` already-trained ones.
+    scored_only: leave the reviews the model has not scored yet as live traffic; they are claimed after that."""
     with conn.transaction():
-        new = _rows(conn.execute(CLAIM, {"n": n, "batch_id": batch_id}))
+        new = _rows(conn.execute(CLAIM, {"n": n, "batch_id": batch_id, "scored_only": scored_only}))
         old = _rows(conn.execute(REPLAY, {"n": replay})) if replay else []
     return {"batch_id": batch_id, "reviews": new, "replay": old}
 

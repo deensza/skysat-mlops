@@ -369,6 +369,20 @@ def test_queue_claims_newest_first_and_never_twice(conn):
     assert queue_db.stats(conn)["claimed"] == 30
 
 
+def test_queue_hands_out_a_live_review_only_after_the_model_scored_it(conn):
+    queue_db.insert(conn, rows(6))  # live reviews: not scored yet
+    queue_db.insert(conn, [queue_row(ReviewIn(**review(review_id="t:train", live=False)))])  # training-only
+    queue_db.mark_scored(conn, "t:0")
+    queue_db.mark_scored(conn, "t:1")
+    first = queue_db.claim(conn, "a", 100, scored_only=True)
+    assert {r["id"] for r in first["reviews"]} == {"t:0", "t:1", "t:train"}
+    # the others are still live traffic, and can be claimed once the model has scored them
+    assert {r["id"] for r in queue_db.to_score(conn, 99)} == {"t:2", "t:3", "t:4", "t:5"}
+    queue_db.mark_scored(conn, "t:2")
+    assert [r["id"] for r in queue_db.claim(conn, "b", 100, scored_only=True)["reviews"]] == ["t:2"]
+    assert len(queue_db.claim(conn, "c", 100)["reviews"]) == 3  # no live scoring: nothing holds them back
+
+
 def test_queue_done_and_release(conn):
     queue_db.insert(conn, rows(20))
     queue_db.claim(conn, "ok", 5)
