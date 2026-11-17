@@ -122,7 +122,8 @@ the read-only Grafana database user and the restart policies ([server.md](server
 6. Drift: `make simulate ... SCENARIO=harsh` sends reviews a harsher survey scored; the live MAE rises past the gate,
    and the next batch (those newest reviews, once scored, trained with `--replay 0 --epochs 3`) gives an adapter that
    beats the champion on them. On the server that was version 4 (17 Nov 2026, started by hand) and then version 6
-   (the same day, started by the drift check); see [llm.md](llm.md#the-gate-and-what-it-measured).
+   (the same day, started by the drift check). About two hours later the alias was moved back to version 1 by
+   hand. See [llm.md](llm.md#the-gate-and-what-it-measured).
 
 ## 5. Life of a request
 

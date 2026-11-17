@@ -23,9 +23,10 @@ Open points (tick when done):
 - [x] The automatic chain end to end: done 17 Nov 2026, 15:09 UTC (drift alarm -> Train -> RTX 3080 Ti -> version 6
       promoted); the drift check itself was started by hand
 - [ ] GitHub's hourly schedule did not start the drift check once on 17 Nov: find out why, or start it by hand
-- [ ] Decide which version serves at the demo: the server's champion is version 6 (since 17 Nov 2026), trained on
-      drifted reviews only and not measured on healthy ones. `make llm-promote VERSION=1 SHARED=yes` moves the alias
-      back to version 1
+- [x] Version 1 serves again: the champion alias was moved back from version 6 by hand on 17 Nov 2026 (by 17:12
+      UTC). Version 6 was trained on drifted reviews only and was not measured on healthy ones
+- [ ] Check `GET /model` before presenting: a later training can move the alias again
+      (`make llm-promote VERSION=1 SHARED=yes` moves it back)
 - [ ] Freeze it before presenting: `AUTO_RETRAIN` to `false` ([server.md](server.md)); the deploy job is already off
 - [ ] Upload slides (with the GitHub link) and code to Moodle
 - [ ] Rehearse once with a timer (target: ~10 min slides + 3 min video + questions)
@@ -94,6 +95,7 @@ Measured through the server, 16 and 17 Nov 2026 ([llm.md](llm.md#through-the-ser
 | RunPod by hand, 17 Nov (RTX 3070, about 5 min, about one cent) | 100 held back | 0.33 | 93.0% | passes, registered as version 5; combined 0.858 against the champion's 0.861, so version 4 stays |
 | Version 4, live, after reviews with a stronger label shift | 591 | 1.230 | 81.2% | drift check: **DRIFT**, and it calls the Train workflow |
 | RunPod by the drift alarm, 17 Nov (RTX 3080 Ti, 5.5 min, about 2 cents) | 405 in the batch | in MLflow | in MLflow | passes and beats version 4: **version 6**, loaded by the server |
+| Version 6, live, until the alias was moved back to version 1 by hand | 58 | not judged | not judged | the drift check needs 100 requests of one version |
 
 - Gate limits: MAE <= 1.0, recommended >= 0.90, complaint >= 0.65; a new adapter must also beat the champion on the same reviews
 - Real 2019-2022 drift does **not** hurt the model, so the drift is simulated (`simulator/scenarios.py`)
@@ -137,7 +139,8 @@ Measured through the server, 16 and 17 Nov 2026 ([llm.md](llm.md#through-the-ser
 
 > Notes: say plainly how far the automatic chain got ([server.md](server.md#what-has-run-17-nov-2026)).
 > The chain ran end to end once on 17 Nov (15:09 UTC), but the drift check was started by hand: GitHub's schedule did
-> not fire that day. Version 6 had not been judged on live traffic when this was written. Also say: on GitHub a Train run looks failed unless it registered a version, because RunPod does not
+> not fire that day. Version 6 was not judged on live traffic: after 58 requests (the check needs 100) the alias was moved back to
+> version 1 by hand. Also say: on GitHub a Train run looks failed unless it registered a version, because RunPod does not
 > let our key read the pod's log; the outcome comes from the server.
 
 ## 9b. MLOps level 2, in small

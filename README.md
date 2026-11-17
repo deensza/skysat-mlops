@@ -42,7 +42,9 @@ The same day the automatic chain ran end to end once. The drift check found drif
 2 cents); version 6 was registered and promoted, and the server loaded it. Three calls before that, between 13:12 and
 14:24 UTC, rented nothing: no GPU type in the list was free. Every drift check that day was started by hand, because
 GitHub's hourly schedule did not start one.
-Not known yet: how version 6 does on live traffic (it had not been judged when this was written).
+Version 6 was not judged on live traffic: it had answered 58 requests (the check needs 100) when the champion alias
+was moved back to version 1 by hand, by 17:12 UTC. The drift check of 17:32 UTC read version 1 again: 71 requests, too
+few for a verdict.
 
 Why the first retraining failed, and every run: [docs/llm.md](docs/llm.md#the-gate-and-what-it-measured).
 

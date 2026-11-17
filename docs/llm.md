@@ -118,6 +118,7 @@ RunPod through the Train workflow on GitHub: run 4 started by hand, run 5 starte
 | Champion v4, drift check on GitHub, 17 Nov 08:06 UTC: all its answers of the last 24 h | 267 | 0.820 ± 0.080 | 89.9% ± 1.8 | no drift |
 | Champion v4, drift check on GitHub, 17 Nov 13:12 UTC, after 492 more reviews with a strong label shift were posted (those scored so far) | 511 | 1.209 ± 0.075 | 81.6% ± 1.7 | **DRIFT** (on both) |
 | Champion v4, drift check on GitHub, 17 Nov 15:10 UTC: the check that started training run 5 | 591 | 1.230 ± 0.070 | 81.2% ± 1.6 | **DRIFT** (on both) |
+| Champion v1 again (the alias was moved back by hand; version 6 had served 58 requests and was not judged), drift check on GitHub, 17 Nov 17:32 UTC | 71 | 1.845 ± 0.255 | 77.5% ± 5.0 | no drift: not enough labelled requests (71 < 100) |
 
 | Training run | Trained on | Gate reviews | New adapter: MAE / recommended / complaint / combined | Champion on the same reviews (v1 for runs 1-3, v4 for run 4) | Result |
 |---|---|---|---|---|---|
@@ -125,7 +126,7 @@ RunPod through the Train workflow on GitHub: run 4 started by hand, run 5 starte
 | 2 | 298 of the 398 live reviews + 500 replayed history reviews, 1,003 s | 100 kept back | 1.07 / 87.0% / 67.0% / 0.807 | 1.18 / 85.0% / 68.0% / 0.800 | **fails the gate**, not registered; the batch went back to pending |
 | 3 | 298 of the 398 live reviews, no replay, 3 epochs (447 steps), 1,153 s | 100 kept back | 0.60 / 93.0% / 72.0% / 0.861 | 1.13 / 90.0% / 72.0% / 0.831 | passes, registered as **version 4, the new champion**; the server loaded it 13 s later |
 | 4 (17 Nov, RunPod RTX 3070, Train run 44030831433, started by hand) | a batch of 300 queue reviews less the gate reviews, no replay, 3 epochs; the pod existed about 5 minutes | 100 kept back | 0.33 / 93.0% / 68.0% / 0.858 | combined 0.861 (the other measures were not noted) | passes, registered as version 5; the champion stays version 4 (0.861 >= 0.858) |
-| 5 (17 Nov, RunPod RTX 3080 Ti, started by the drift check, run 44111118456) | a batch of 405 queue reviews less the gate reviews, no replay, 3 epochs; the pod existed 5 min 32 s | kept back from the batch | in its MLflow run; not read for this page | in its MLflow run | registered as **version 6, the new champion**: the trainer registers only what passes the gate and promotes only what beats the champion on the same reviews. The server loaded it |
+| 5 (17 Nov, RunPod RTX 3080 Ti, started by the drift check, run 44111118456) | a batch of 405 queue reviews less the gate reviews, no replay, 3 epochs; the pod existed 5 min 32 s | kept back from the batch | in its MLflow run; not read for this page | in its MLflow run | registered as **version 6 and promoted**: the trainer registers only what passes the gate and promotes only what beats the champion on the same reviews. The server loaded it and served it until the alias was moved back to version 1 by hand (by 17:12 UTC) |
 
 What run 2 shows. The retrained adapter beat the champion on the drifted reviews (0.807 against 0.800) but did not
 reach the gate, so nothing was registered and version 1 went on serving. `harsh` changes the labels and leaves the
@@ -202,7 +203,8 @@ The automatic chain on 17 Nov 2026: drift check -> DRIFT -> issue -> Train workf
 pod -> gate -> version 6 registered and promoted -> the server loaded it. It completed once, at the fourth call; the
 first three found no free GPU. The drift checks were started by hand: GitHub's hourly schedule did not start one that
 day. Not in the log: version 6's gate numbers (they are in its MLflow run).
-Version 6 had not been judged on live traffic when this was written.
+Version 6 was not judged on live traffic: it had served 58 requests (the check needs 100) when the alias was moved
+back to version 1 by hand, by 17:12 UTC.
 
 ## Commands
 

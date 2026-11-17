@@ -94,12 +94,16 @@ The loop was switched on on 17 Nov 2026: the secrets and variables below are set
   (5 min 32 s; at $0.18/h about 2 cents). "From the server: reviews marked trained 2694 -> 3099, serving model 4 ->
   6"; `registered: True`, version 6, `promoted: True`; "Trainer pods left behind: 0". The run ended green. This
   rental starts the 6 hour cooldown. Version 6's gate numbers are in its MLflow run; the pod's log could not be read.
-- **After the promotion:** version 6 had not been judged on live traffic when this was written.
-- **Not done by the workflow:** the issue stays open until someone closes it.
+- **After the promotion:** version 6 was not judged on live traffic. By 17:12 UTC the champion alias was moved back
+  to version 1 by hand, to run the whole cycle again from the start. Drift check 44138054792 (by hand, 17:32 UTC)
+  read version 1 only: 71 requests, MAE 1.845 ± 0.255, recommended 0.775 ± 0.050, each "not enough labelled requests
+  (71 < 100)", so "no drift" and no training. In its 24 hour window: version 1, 71 requests; version 4, 594;
+  version 6, 58.
+- **Not done by the workflow:** closing the issue. Issue 18 was closed by hand at 17:12 UTC.
 - **The hourly schedule.** `drift.yml` reached `main` at 06:17 UTC with the schedule `35 * * * *`. GitHub started no
   scheduled run in the seven hourly slots from 06:35 to 12:35 UTC, although the workflow was listed as active. At
   13:08 UTC the workflow was disabled and enabled again.
-  By 14:35 UTC no scheduled run had appeared: nine hourly slots in a row since the workflow reached `main`, two of
+  By 16:35 UTC no scheduled run had appeared: eleven hourly slots in a row since the workflow reached `main`, four of
   them after it was enabled again. The cause is not known. Until the schedule works, the drift check has to be started
   by hand (`gh workflow run drift.yml`) or by something else that has a clock.
 - **On GitHub the Train runs look failed** even when they trained: RunPod answers 403 to this project's API key on
