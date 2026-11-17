@@ -118,8 +118,9 @@ reached 0.41.
 
 What run 3 shows. The same batch without the replayed reviews (`--replay 0 --epochs 3`, about as much training as
 run 2: 447 steps against 399) passed the gate and beat the champion on the same 100 held-back reviews. What made the
-difference was leaving out the reviews with the old labels. The trainer's default is still `--replay 500`, so a
-training started by the drift check would repeat run 2 unless it is given these arguments. Three cautions:
+difference was leaving out the reviews with the old labels. So the drift check starts its training with these
+arguments (`drift.yml`); a training started by hand keeps the trainer's default, `--replay 500` and one epoch. Three
+cautions:
 
 - The 0.60 is on 100 held-back reviews of the same batch as the training reviews, and `harsh` pushes many scores down
   to 1, which makes them easier to predict than healthy ones.

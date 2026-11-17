@@ -57,7 +57,8 @@ simulator (a PC) -> POST /reviews -> queue.reviews -> drift.yml -> train.yml -> 
 - **The drift check** is [drift.yml](../.github/workflows/drift.yml), scheduled hourly at :35. It reads `GET /model` and
   `GET /scores/recent?version=N` (aggregates only) and judges only the serving model. On DRIFT it opens one issue
   ("Drift detected: the serving model fell below the gate") and, only if the repository variable `AUTO_RETRAIN` is
-  `true`, calls the Train workflow. A scheduled run with missing secrets is skipped with a warning.
+  `true`, calls the Train workflow with `--replay 0 --epochs 3` (the new reviews only: after drift the old labels are
+  the problem). A scheduled run with missing secrets is skipped with a warning.
 - **Training** is [train.yml](../.github/workflows/train.yml) ("Train"), started by the drift check or by hand
   (`gh workflow run train.yml`). It checks its settings, respects a cooldown (`TRAIN_COOLDOWN_HOURS`, default 6),
   rents nothing if fewer than 300 reviews are pending, runs `llm.runpod_pod --wait --branch main --max-minutes 45`,

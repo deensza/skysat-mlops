@@ -107,6 +107,10 @@ jobs:
     needs: check
     if: needs.check.outputs.drift == 'true' && vars.AUTO_RETRAIN == 'true'
     uses: ./.github/workflows/train.yml
+    # After drift the old labels are the problem: train on the new reviews only (no replay), three passes over them.
+    # Measured on 17 Nov 2026: with the default (500 replayed reviews, one pass) the retraining failed the gate, with
+    # these arguments it passed (docs/llm.md). A Train run started by hand keeps the trainer's defaults.
     with:
       reason: "drift (model version ${{ needs.check.outputs.version }})"
+      trainer_args: "--replay 0 --epochs 3"
     secrets: inherit

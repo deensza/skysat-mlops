@@ -135,7 +135,10 @@ All three workflows are code and configuration only: none has run on GitHub yet.
   version's answers in `/scores/recent?version=N` (`--all-versions` counts all): after a promotion the old model's
   answers no longer count, so a problem that is already fixed does not ask for another retraining. On DRIFT it opens one
   issue "Drift detected: the serving model fell below the gate" and, only if the repository variable `AUTO_RETRAIN` is
-  `true`, calls `train.yml`. A scheduled run with missing secrets is skipped with a warning.
+  `true`, calls `train.yml` with `--replay 0 --epochs 3`: the new reviews only, because after drift the old labels are
+  the problem (with the default, 500 replayed reviews, the retraining of 16 Nov failed the gate; without them it
+  passed, see [llm.md](llm.md#the-gate-and-what-it-measured)). A scheduled run with missing secrets is skipped with a
+  warning.
 - `train.yml` ("Train"): started by `drift.yml` or by hand. It checks its settings, respects a cooldown (variable
   `TRAIN_COOLDOWN_HOURS`, default 6: no automatic run if a GPU was rented less than that long ago, by either workflow,
   whether that run worked or not), reads the
