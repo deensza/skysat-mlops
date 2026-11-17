@@ -28,9 +28,17 @@ Measured on the server on 16 and 17 Nov 2026, live traffic scored by the model t
 
 The drift check fired on the harsh reviews. A first retraining that mixed 500 old reviews into the new ones failed the
 gate (MAE <= 1.0, recommended >= 90%) and was not registered. A second one, on the new reviews only, passed, beat the
-champion on the same held-back reviews, became version 4, and the server loaded it by itself. These trainings were
-started by hand on a Colab T4; the automatic path (a RunPod GPU started by GitHub) has not trained a model yet. Why
-the first one failed, and the earlier runs: [docs/llm.md](docs/llm.md#the-gate-and-what-it-measured).
+champion on the same held-back reviews, became version 4, and the server loaded it by itself. These trainings of 16
+and 17 Nov ran on a Google Colab T4 started by hand, before the RunPod path had been tried. Colab is not a supported
+way to train and there is no Colab code in this repository.
+
+On 17 Nov 2026 the Train workflow ran on RunPod: an RTX 3070 at $0.13/h for about 5 minutes (about one cent), started
+by hand. It trained on a batch of 300 reviews from the server's queue and registered version 5 (MAE 0.33, recommended
+93.0% on 100 held-back reviews). Version 5 did not beat version 4 on those reviews (combined 0.858 against 0.861), so
+version 4 stayed the champion. The automatic chain (drift check -> Train workflow) got as far as the rental that day: the drift
+check found drift on version 4 and called the Train workflow twice (13:12 and 13:38 UTC), and both times RunPod had
+no free GPU of any type in the list, so nothing was rented. A training started by a drift alarm has not happened yet.
+Why the first retraining failed, and every run: [docs/llm.md](docs/llm.md#the-gate-and-what-it-measured).
 
 ## Data and licence
 
@@ -54,7 +62,7 @@ the first one failed, and the earlier runs: [docs/llm.md](docs/llm.md#the-gate-a
 | `tests/` | Automated tests (pytest, no GPU; the queue's SQL against a real PostgreSQL in CI) |
 | `docs/` | [LLM](docs/llm.md), [architecture](docs/architecture.md), [server](docs/server.md), [presentation](docs/presentation.md) |
 | `demo/` | [Demo runbook](demo/README.md) |
-| `.github/workflows/` | CI/CD, drift check |
+| `.github/workflows/` | CI/CD (`ci.yml`), drift check (`drift.yml`), training on a rented GPU (`train.yml`) |
 
 ## Setup
 
@@ -75,22 +83,30 @@ kaggle datasets download joelljungstrom/128k-airline-reviews -p data/reviews --u
 ```bash
 make llm-up                                   # API, intake, MLflow, PostgreSQL, Nginx, Grafana
 make simulate-seed N=2000                     # the first model's training reviews, into the queue
-make llm-train                                # v1 on this PC's GPU (or: make train-remote, on RunPod)
+make llm-train LLM_MLFLOW=http://localhost:5050   # v1 on this PC's GPU, into the stack's MLflow: the API loads it
 make simulate FROM=2019-01 PER_MONTH=100      # live passengers -> Grafana (http://localhost:3000)
 make simulate FROM=2019-02 PER_MONTH=300 SCENARIO=harsh   # the drift
 make llm-drift                                # drift check on the last 24 h of the log
-make llm-train                                # v2 from the newest reviews; promoted if it beats v1
+make queue-stats                              # wait until "ready" is 300 or more (scored reviews; ~20 s each on a laptop)
+make llm-train LLM_MLFLOW=http://localhost:5050 ARGS="--replay 0 --epochs 3"   # v2 from the new reviews only; promoted if it beats v1
 ```
 
-`make llm-train` uses a local sqlite MLflow unless `SHARED=yes`. Docker: `make d-ps`, `d-logs`, `d-build`,
-`d-down` (data kept), `d-wipe` (deletes local data, asks first).
+Plain `make llm-train` writes to a local sqlite MLflow (`artifacts/llm-runs/mlflow.db`), which the API in Docker does
+not read: `LLM_MLFLOW=http://localhost:5050` trains into the stack's own MLflow, `SHARED=yes` into the team's (from
+`.env`). After drift, retrain with `--replay 0 --epochs 3`: with the default (500 replayed reviews, one epoch) the
+retraining of 16 Nov failed the gate. On RunPod the same trainer is started by the Train workflow or by
+`make train-remote`, against the server's queue (the pod needs a public queue address). Docker: `make d-ps`, `d-logs`,
+`d-build`, `d-down` (data kept), `d-wipe` (deletes local data, asks first).
 
 ## MLOps level
 
 By Google's three levels (manual, ML pipeline automation, CI/CD pipeline automation), SkySat is built to level 2: tests,
-image and deploy with rollback, and a drift alarm that starts the training workflow. The loop is built but not yet
-switched on (the repository owner adds the secrets and variables) and has not run on GitHub yet. What a real level 2
-system has that this one does not: [docs/architecture.md](docs/architecture.md#mlops-level).
+image and deploy with rollback, and a drift alarm that starts the training workflow. The loop has been switched on
+since 17 Nov 2026 (secrets and variables set, `AUTO_RETRAIN=true`). On that day the drift check found drift and called the Train workflow by itself, twice; RunPod had
+no free GPU either time, so the automatic path has not trained a model yet (the Train workflow did train on RunPod when
+started by hand). The deploy job is still off (no
+self-hosted runner, `DEPLOY_TO_RUNNER` unset): the server is updated by hand with `az vm run-command`. What a real
+level 2 system has that this one does not: [docs/architecture.md](docs/architecture.md#mlops-level).
 
 ## Pipeline
 
@@ -101,7 +117,7 @@ system has that this one does not: [docs/architecture.md](docs/architecture.md#m
 | Serve | `api` service (`llm/serve.py`, CPU, 8 GB), behind Nginx: `/score`, `/model`, `/health`, `/docs` |
 | Monitor | `llm_scores` table → Grafana; `GET /scores/recent?hours=N` returns aggregates only |
 | Drift | `llm/drift_check.py`: DRIFT if the live MAE of the serving model > 1.0 or its recommended accuracy < 0.90 by more than the sampling noise, on >= 100 labelled requests |
-| CI/CD | `ci.yml`: tests (including `tests/test_pipeline.py`), `nginx -t`, compose check, image build, deploy on main only, if switched on, with a rollback to the running image if the smoke test fails |
-| Retrain | `train.yml`: started by `drift.yml` (only if `AUTO_RETRAIN` is `true`) or by hand; cooldown, needs >= 300 pending reviews, rents a RunPod GPU for at most 45 minutes, then checks no pod is left. Built, not yet switched on, not yet run on GitHub. Also `make train-remote` |
+| CI/CD | `ci.yml`: tests (including `tests/test_pipeline.py`), `nginx -t`, compose check, image build; on pushes to main the image goes to ghcr.io. The deploy job (rollback to the running image if the smoke test fails) is written but off: no self-hosted runner, `DEPLOY_TO_RUNNER` unset, so it has never run and the server is updated by hand |
+| Retrain | `train.yml`: started by `drift.yml` (only if `AUTO_RETRAIN` is `true`) or by hand; cooldown, needs >= 300 `ready` reviews (pending and already scored by the model as live traffic), rents a RunPod GPU for at most 45 minutes, then checks no pod is left. Switched on since 17 Nov 2026; ran on RunPod that day ([docs/llm.md](docs/llm.md#runpod-the-trainers-gpu)). Also `make train-remote` |
 
 See [docs/architecture.md](docs/architecture.md) for the picture and [docs/server.md](docs/server.md) for the always-on server.

@@ -1,5 +1,5 @@
 # CI/CD. Pipeline: test -> image -> deploy.
-#   test    every push and pull request, on GitHub's servers: pytest (no torch, no model, no dataset), including the
+#   test    pushes and pull requests to main (and by hand), on GitHub's servers: pytest (no torch, no model, no dataset), including the
 #           pipeline test tests/test_pipeline.py (intake -> queue -> trainer, training stubbed) when CI's PostgreSQL
 #           is there; the Docker Compose files (local and server) must be valid; and both Nginx gateway configs
 #           must pass `nginx -t`.
@@ -8,7 +8,8 @@
 #   deploy  only on main, and only once the team's server has a self-hosted runner (label `skysat`) and the
 #           repository variable DEPLOY_TO_RUNNER=true is set: pulls the new image on the server, restarts the
 #           stack and smoke-tests it. If the smoke test fails, it rolls back to the previous image.
-#           Never runs for pull requests (see docs/server.md).
+#           Never runs for pull requests (see docs/server.md). As of 17 Nov 2026 neither the runner nor the
+#           variable exists: this job has never run, and the server is updated by hand (docs/server.md).
 # The adapter is not part of the image: the API serves whatever MLflow's `skysat-reviews@champion` points to.
 # Training is not in this workflow (no GPU on GitHub): it is .github/workflows/train.yml, started by the drift check
 # or by hand; the trainer runs on a RunPod GPU (llm/runpod_pod.py).

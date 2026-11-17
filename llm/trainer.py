@@ -5,7 +5,8 @@
 
 Runs where there is a GPU: a RunPod pod started by llm/runpod_pod.py (which deletes the pod when this exits), or a
 local NVIDIA card. Steps:
-  1. POST /queue/claim: up to --n pending reviews (the most recently received first) and --replay already-trained ones
+  1. POST /queue/claim: up to --n pending reviews that the model has already scored as live traffic (the most
+     recently received first; training-only reviews count as scored) and --replay already-trained ones
   2. 10% of the NEW reviews, at least --n-gate-min, are kept back for the gate (never trained on); the rest plus the
      replayed ones train
   3. llm/train_lora.py run(): train, gate, compare with the champion on the same gate reviews, log, register, promote

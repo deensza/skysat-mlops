@@ -102,8 +102,11 @@ in the demo is simulated with `harsh`.
 
 The first rows above came from files on a PC. These came from the server's queue: 1,996 history reviews were seeded
 (4 of 2,000 posts failed), 100 healthy and 298 harsh reviews arrived as live traffic and were scored by the champion
-(version 1), and the trainer ran three times on a Colab T4, started by hand (the trainer only needs HTTPS to the queue
-and to MLflow). After the third run 300 more harsh reviews arrived and were scored by the new champion (version 4).
+(version 1), and the trainer ran three times (runs 1 to 3 below). Where these were measured: runs 1 to 3 ran on a
+Google Colab T4 started by hand, before the RunPod path had been tried. Colab is not a supported way to train and
+there is no Colab code in this repository; the supported paths are a RunPod pod and a local NVIDIA card. After the
+third run 300 more harsh reviews arrived and were scored by the new champion (version 4). Run 4 is the first on
+RunPod, started through the Train workflow on GitHub ([what ran on RunPod](#what-ran-on-runpod-17-nov-2026)).
 
 | Live on the server | Requests | MAE (± 1 standard error) | Recommended | Drift check |
 |---|---|---|---|---|
@@ -111,12 +114,15 @@ and to MLflow). After the third run 300 more harsh reviews arrived and were scor
 | Champion v1: harsh reviews, flown 2019-02 | 300 | 1.150 ± 0.061 | 89.0% | **DRIFT** (on MAE) |
 | Champion v1: both | 400 | 1.100 ± 0.050 | 90.5% | **DRIFT** |
 | Champion v4 (after run 3): harsh reviews, flown 2019-03, the first 165 of 300 | 165 | 0.551 ± 0.066 | 97.0% ± 1.3 | no drift |
+| Champion v4, drift check on GitHub, 17 Nov 08:06 UTC: all its answers of the last 24 h | 267 | 0.820 ± 0.080 | 89.9% ± 1.8 | no drift |
+| Champion v4, drift check on GitHub, 17 Nov 13:12 UTC, after 492 more reviews with a strong label shift were posted (those scored so far) | 511 | 1.209 ± 0.075 | 81.6% ± 1.7 | **DRIFT** (on both) |
 
-| Training run | Trained on | Gate reviews | New adapter: MAE / recommended / complaint / combined | Champion v1 on the same reviews | Result |
+| Training run | Trained on | Gate reviews | New adapter: MAE / recommended / complaint / combined | Champion on the same reviews (v1 for runs 1-3, v4 for run 4) | Result |
 |---|---|---|---|---|---|
 | 1 | 1,796 of the 1,996 history reviews, 2,279 s | 200 kept back | 0.97 / 90.5% / 67.5% / 0.824 | 0.89 / 92.5% / 66.5% / 0.830 | passes, registered as version 3; the champion stays (0.830 >= 0.824) |
 | 2 | 298 of the 398 live reviews + 500 replayed history reviews, 1,003 s | 100 kept back | 1.07 / 87.0% / 67.0% / 0.807 | 1.18 / 85.0% / 68.0% / 0.800 | **fails the gate**, not registered; the batch went back to pending |
 | 3 | 298 of the 398 live reviews, no replay, 3 epochs (447 steps), 1,153 s | 100 kept back | 0.60 / 93.0% / 72.0% / 0.861 | 1.13 / 90.0% / 72.0% / 0.831 | passes, registered as **version 4, the new champion**; the server loaded it 13 s later |
+| 4 (17 Nov, RunPod RTX 3070, Train run 44030831433) | a batch of 300 queue reviews less the gate reviews, no replay, 3 epochs; the pod existed about 5 minutes | 100 kept back | 0.33 / 93.0% / 68.0% / 0.858 | combined 0.861 (the other measures were not noted) | passes, registered as version 5; the champion stays version 4 (0.861 >= 0.858) |
 
 What run 2 shows. The retrained adapter beat the champion on the drifted reviews (0.807 against 0.800) but did not
 reach the gate, so nothing was registered and version 1 went on serving. `harsh` changes the labels and leaves the
@@ -136,8 +142,9 @@ cautions:
 - Version 4 was measured on harsh reviews only. How it does on healthy ones (the old labels) was not measured; it has
   probably got worse there, because that is what the new labels ask for.
 
-On the T4, 1,796 reviews took 2,279 s (322 s on an RTX 4070 Laptop) and PyTorch logged one out-of-memory warning
-(training finished). Colab ships a `torchao` that this `peft` refuses to load next to: `pip uninstall torchao` first.
+Runs 1 to 3 were timed on the Colab T4: 1,796 reviews took 2,279 s (322 s on an RTX 4070 Laptop) and PyTorch logged
+one out-of-memory warning (training finished). Run 4's numbers are from its MLflow run; the pod's own log could not be
+read ([below](#what-ran-on-runpod-17-nov-2026)), so its training time alone is not known.
 
 ## RunPod: the trainer's GPU
 
@@ -149,26 +156,62 @@ and as a last resort RTX 4090 24 GB 0.34.
 The pod runs `runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404`, clones `--branch` of this repo from GitHub (**the code
 must be pushed**), installs transformers/peft/mlflow-skinny and runs the trainer against `QUEUE_URL`. It **deletes
 itself** when the trainer exits, worked or not, with the key RunPod gives each pod (the account's key is never sent to
-it). Two more guards: a timer inside the pod deletes it after `--max-minutes` (90), and `--wait` follows the log from
+it). Two more guards: a timer inside the pod deletes it after `--max-minutes` (90), and `--wait` follows the pod from
 here and deletes it at that deadline too. On an 8 GB card PyTorch logged one out-of-memory warning (training finished);
 if a 3070 runs out, retry with `--gpu "NVIDIA RTX A4000"`.
+
+`--wait` is written to print the pod's log and return the trainer's exit code from it. RunPod answers 403 to this
+project's API key on the pod-log endpoint ("Pod log: HTTP 403", every run of 17 Nov 2026), so the launcher takes the
+outcome from the server: it reads `/queue/stats` and `/model` before and after. More reviews marked trained means a
+version was registered (exit code 0); a new serving version means it was promoted. Without the log a failed gate, too
+few reviews and a crash look the same: nothing was registered, and the run ends as failed. The trainer's own lines
+(gate numbers, training time) are then only in MLflow.
+
+If no GPU type in the list is free, the launcher stops with "No GPU had capacity": nothing is rented and nothing is
+billed. The Train workflow then fails without its "A GPU was rented" step, so the cooldown does not start and the next
+drift check may try again. Every type in the list can be out of stock at once. On 17 Nov 2026 at 13:12 UTC all six
+types then in the list answered HTTP 400 "There are no longer any instances available". The RTX 4090 ($0.34/h) was
+added the same hour as a seventh type, tried last. At 13:38 UTC all seven, the RTX 4090 included, gave the same answer.
+
+### What ran on RunPod, 17 Nov 2026
+
+| Started by | Start (UTC) | GPU | The pod existed | Trainer arguments | What happened |
+|---|---|---|---|---|---|
+| Train run 44030831433, by hand | 06:23 | RTX 3070 | about 5 min | `--replay 0 --epochs 3` | training run 4 above: 300 reviews marked trained, version 5 registered, champion stays version 4 |
+| Train run 44032765219, by hand | 06:39 | RTX 3070 | 3 min 48 s | `--min-new 100000` (a test of the launcher: the trainer trains nothing) | nothing registered, as intended |
+| Train run 44033547732, by hand | 06:45 | RTX 3070 | 5 min 12 s | `--min-new 100000` | "reviews marked trained 2694 -> 2694, serving model 4 -> 4": nothing registered, as intended |
+| Drift check 44090298125 (by hand), its retrain job | 13:12 | none | - | `--replay 0 --epochs 3` | DRIFT on version 4, Train called; "No GPU had capacity" for the six types then in the list; nothing rented |
+| Drift check 44094574881 (by hand), its retrain job | 13:38 | none | - | `--replay 0 --epochs 3` | DRIFT on version 4, Train called; "No GPU had capacity" for all seven types; nothing rented |
+
+All three hand-started runs show as failed on GitHub. The first two ended before the launcher could ask the server
+(added the same morning), so their outcome read as unknown; the third registered nothing, which is what its arguments
+ask for. After each run the sweep found no pod ("Trainer pods left behind: 0").
+
+Cost: about 5 minutes at $0.13/h is about one cent per run by RunPod's price list (the bill itself was not read). The
+45 minute limit at the dearest type in the list (RTX 4090, $0.34/h) is the upper bound, about $0.26 per run.
+
+How far the automatic chain got on 17 Nov 2026: drift check -> DRIFT -> issue -> Train workflow -> cooldown and
+queue check passed -> no GPU free, twice. Not seen yet: a pod rented by a drift alarm, the training and promotion
+after it, and a "no drift" for the version it promotes.
 
 ## Commands
 
 ```bash
 make llm-up                                   # Docker: api, intake, PostgreSQL, Nginx, Grafana, MLflow
 make simulate-seed N=2000                     # the first model's training reviews, into the queue
-make llm-train                                # the trainer on this PC (local sqlite MLflow): v1
+make llm-train LLM_MLFLOW=http://localhost:5050   # the trainer on this PC, into the stack's MLflow: v1, the API loads it
 make simulate FROM=2019-01 PER_MONTH=100      # normal live passengers: Grafana shows the healthy baseline
 make simulate FROM=2019-02 PER_MONTH=300 SCENARIO=harsh   # the drift: live MAE crosses the line
 make llm-drift URL=http://localhost:8080      # DRIFT on at least 100 labelled requests
-make llm-train                                # or: make train-remote (RunPod); v2 from the newest reviews
-make queue-stats                              # counts per status
+make queue-stats                              # counts per status; "ready": what a trainer could take now (300 needed)
+make llm-train LLM_MLFLOW=http://localhost:5050 ARGS="--replay 0 --epochs 3"   # v2 from the new reviews only
 make train-remote-dry                         # the RunPod request, passwords hidden; starts nothing
 ```
 
-`make llm-train` uses a local sqlite MLflow (`artifacts/llm-runs/mlflow.db`) unless you add `SHARED=yes`.
-`train-remote` passes `QUEUE_URL`, `QUEUE_USER`, `QUEUE_PASSWORD` (the gateway's `trainer` login) and the MLflow from your
+Plain `make llm-train` uses a local sqlite MLflow (`artifacts/llm-runs/mlflow.db`), which the API in Docker does not
+read: use it for trials. `LLM_MLFLOW=http://localhost:5050` trains into the stack's own MLflow, `SHARED=yes` into the
+team's (from `.env`). `make train-remote` runs the same trainer on RunPod against a queue the pod can reach (the
+server's, not `localhost`). It passes `QUEUE_URL`, `QUEUE_USER`, `QUEUE_PASSWORD` (the gateway's `trainer` login) and the MLflow from your
 environment (`.env`: the team's DagsHub) to the pod. With `AUTO_TRAIN=1` (and those variables plus `RUNPOD_API_KEY` in the
 server's `.env`) the intake starts a trainer pod by itself when `TRAIN_MIN_PENDING` (500) reviews wait, at most once every
 `TRAIN_EVERY_HOURS` (6).

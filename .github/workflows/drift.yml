@@ -5,8 +5,10 @@
 # live traffic: each passenger review, sent to the model with its true labels.
 # On drift it opens one GitHub issue (never a second while one is open). If the repository variable AUTO_RETRAIN is
 # `true` it also starts the Train workflow (train.yml), which rents a RunPod GPU. The cooldown (TRAIN_COOLDOWN_HOURS)
-# and the "at least 300 pending reviews" check in train.yml stop it from renting GPUs in a loop; the new adapter is
-# promoted only if it beats the champion. The run's summary page shows the table (numbers, never rows).
+# and the "at least 300 ready reviews" check in train.yml (ready: pending and already scored by the model as live
+# traffic) stop it from renting GPUs in a loop; a run that found no free GPU rented nothing and does not count for the
+# cooldown, so the next check may try again. The new adapter is promoted only if it beats the champion. The run's
+# summary page shows the table (numbers, never rows).
 # Runs every hour. If a secret is missing, a scheduled run only warns (no hourly red run); a run by hand fails.
 #
 # Switch it off: `gh workflow disable drift.yml`, or leave AUTO_RETRAIN unset or not `true` (the issue is still opened).
@@ -109,8 +111,9 @@ jobs:
     if: needs.check.outputs.drift == 'true' && vars.AUTO_RETRAIN == 'true'
     uses: ./.github/workflows/train.yml
     # After drift the old labels are the problem: train on the new reviews only (no replay), three passes over them.
-    # Measured on 17 Nov 2026: with the default (500 replayed reviews, one pass) the retraining failed the gate, with
-    # these arguments it passed (docs/llm.md). A Train run started by hand keeps the trainer's defaults.
+    # Measured on 16 and 17 Nov 2026: with the default (500 replayed reviews, one pass) the retraining of 16 Nov failed
+    # the gate, with these arguments the one of 17 Nov passed (docs/llm.md). A Train run started by hand keeps the
+    # trainer's defaults.
     with:
       reason: "drift (model version ${{ needs.check.outputs.version }})"
       trainer_args: "--replay 0 --epochs 3"
