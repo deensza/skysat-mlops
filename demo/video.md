@@ -6,7 +6,8 @@ the slides and narrated live. Commands and safety setup: [README.md](README.md).
 Open points:
 
 - [ ] Rehearse every scene once on the demo machine; fill in the rehearsal log below
-- [ ] Record, cut, upload; put the link in [docs/presentation.md](../docs/presentation.md) slide 10 and the main README
+- [x] Record, cut, upload; put the link in [docs/presentation.md](../docs/presentation.md) slide 10 and the main README
+      (17 Nov 2026: two videos, see "Recorded videos" below)
 - [ ] Screenshots for the slides into [assets/](assets/)
 
 ## Scenes
@@ -36,6 +37,28 @@ Open points:
 
 **Not into git.** Upload it to YouTube (unlisted) or Google Drive and put the **link** in the slides, the main README and
 Moodle. Small screenshots go in [assets/](assets/) (git ignores video files there).
+
+## Recorded videos (17 Nov 2026)
+
+Both are silent (narrated live), with waiting moments cut or sped up. Folder: [Google Drive](https://drive.google.com/drive/folders/1kfRWCZTZPatf758JnG09AcfO2DWUIb80).
+
+**[The server and its retraining loop](https://drive.google.com/file/d/1Ulbq2-DxDoxo9LLP3ISe-qSe07x_d64b/view)** (2:18), recorded from a laptop against the team's server, no GPU needed:
+
+| Time | Screen | What it shows |
+|---|---|---|
+| 0:00 | GitHub issue 18 | the drift check opened "Drift detected: the serving model fell below the gate" by itself |
+| 0:08 | Actions → Drift check run 44111118456 | the drift table (DRIFT on version 4), then the job `retrain / train`: a rented RTX 3080 Ti, "serving model 4 -> 6", "Trainer pods left behind: 0" |
+| 0:35 | DagsHub → Models | both registered models (`skysat-satisfaction`, the tabular model; `skysat-reviews`, the LLM), versions 1-6, champion 6, its metrics and the `adapter` files |
+| 1:07 | Swagger → `GET /model` | the server serves version 6 on Qwen/Qwen2.5-1.5B-Instruct |
+| 1:22 | Swagger → `POST /score` | one made-up review; the wait is sped up 25×; answer: score 1, recommended no, complaint ground service, version 6, about 37 s |
+| 1:57 | Grafana | requests, live MAE and recommended accuracy per hour, model version over time |
+
+The server's address is blurred in every frame (it is not in this public repository on purpose) and the gateway's login
+dialog is cut out.
+
+**[The Kaggle competition, the project's first model](https://drive.google.com/file/d/1dPYeIG6mb0o7lfYjoIIgoqsWV4Z0CbQd/view)** (1:46): Playground S6E10 with the tabular model the project
+started with, before the LLM: the team's submissions (public 0.95789 → 0.95982 → 0.96091), the run in MLflow
+(5-fold CV 0.96113) and the leaderboard (rank 1341 of 3,705 at recording time). Final private score: 0.96151.
 
 ## Rehearsal log
 

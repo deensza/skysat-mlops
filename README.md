@@ -5,6 +5,8 @@ Topic: **MLOps – Build a simple ML model and demonstrate its complete lifecycl
 
 Team: Bermal Deniz Akkaya, Osman Şahin Güler
 
+Demo videos: [the server and its retraining loop](https://drive.google.com/file/d/1Ulbq2-DxDoxo9LLP3ISe-qSe07x_d64b/view) (2:18) · [the Kaggle competition, the project's first model](https://drive.google.com/file/d/1dPYeIG6mb0o7lfYjoIIgoqsWV4Z0CbQd/view) (1:46) · [folder](https://drive.google.com/drive/folders/1kfRWCZTZPatf758JnG09AcfO2DWUIb80)
+
 SkySat is a **complaint box** for airline reviews. A small LLM (Qwen2.5-1.5B-Instruct, LoRA-tuned) reads a real
 review and answers with the score out of 10, whether the reviewer would recommend the airline, and the main complaint.
 Passengers' reviews reach the server, wait in a queue, and a rented GPU retrains the model from it:
