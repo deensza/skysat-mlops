@@ -163,7 +163,8 @@ jobs:
                           "no pod was started.\n" % (s["pending"], ready))
           PY
 
-      # 45 minutes at the dearest GPU in the list ($0.22/h) is at most about $0.17 per run.
+      # 45 minutes at the dearest GPU in the list (RTX 4090, $0.34/h, tried last) is at most about $0.26 per run;
+      # a run on the usual RTX 3070 took about 5 minutes (about one cent).
       - name: Train on a rented GPU
         id: train
         if: steps.cooldown.outputs.skip != 'true' && steps.before.outputs.skip != 'true'

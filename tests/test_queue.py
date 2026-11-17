@@ -82,6 +82,7 @@ def test_runpod_request_is_cheap_safe_and_self_deleting(monkeypatch):
     monkeypatch.setenv("QUEUE_PASSWORD", "secret")
     body = runpod_pod.pod_body(runpod_pod.GPUS[0], "main", "--n 300", 60)
     assert body["gpu"] == {"id": "NVIDIA GeForce RTX 3070", "count": 1, "minCudaVersion": "12.8"}
+    assert runpod_pod.GPUS[-1] == "NVIDIA GeForce RTX 4090" and len(runpod_pod.GPUS) == 7  # dearest last
     assert body["cloud"] == "COMMUNITY" and body["env"]["MAX_MINUTES"] == "60"
     assert body["env"]["TRAINER_ARGS"] == "--n 300" and body["env"]["QUEUE_PASSWORD"] == "secret"
     script = body["cmd"][0]

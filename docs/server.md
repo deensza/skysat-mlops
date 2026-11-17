@@ -133,7 +133,7 @@ Enable them again afterwards.
 ### What it can cost
 
 - A training run: the Train workflow stops the pod after 45 minutes; at the dearest GPU in the list ($0.22/h) that is at
-  most about $0.17 per run. With the 6 h cooldown there are at most 4 automatic runs a day.
+  most about $0.26 per run (an RTX 4090 at $0.34/h, tried only when the six cheaper types are all out of stock). With the 6 h cooldown there are at most 4 automatic runs a day.
 - The VM: `Standard_B2as_v2` in austriaeast is $0.0864 per hour on Azure's price list, about $2 a day, from the Azure
   for Students credit. No card is charged: when the credit ends, Azure disables the subscription. Check Cost
   Management. Deallocate the VM when it is not needed:

@@ -143,7 +143,8 @@ On the T4, 1,796 reviews took 2,279 s (322 s on an RTX 4070 Laptop) and PyTorch 
 
 `llm/runpod_pod.py` (`make train-remote`) creates a pod through RunPod's REST API (`https://api.runpod.io/v2/pods`),
 trying GPU types cheapest first. Community-cloud prices from RunPod's catalog on 2026-11-16, per hour: RTX 3070 8 GB
-0.13, RTX A4000 16 GB 0.17, RTX 3080 Ti 12 GB 0.18, RTX A4500 20 GB 0.19, RTX 4000 Ada 20 GB 0.20, RTX 3090 24 GB 0.22.
+0.13, RTX A4000 16 GB 0.17, RTX 3080 Ti 12 GB 0.18, RTX A4500 20 GB 0.19, RTX 4000 Ada 20 GB 0.20, RTX 3090 24 GB 0.22,
+and as a last resort RTX 4090 24 GB 0.34.
 
 The pod runs `runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404`, clones `--branch` of this repo from GitHub (**the code
 must be pushed**), installs transformers/peft/mlflow-skinny and runs the trainer against `QUEUE_URL`. It **deletes
