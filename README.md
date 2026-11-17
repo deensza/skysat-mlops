@@ -19,16 +19,18 @@ data intake → queue → LoRA training on a rented GPU → quality gate → exp
 packaging (Docker) → serving (FastAPI, Nginx) → monitoring (PostgreSQL, Grafana) → drift detection → retraining →
 CI/CD (GitHub Actions). Details: [docs/llm.md](docs/llm.md).
 
-Measured on the server on 16 Nov 2026, with the champion (version 1) serving:
+Measured on the server on 16 and 17 Nov 2026, live traffic scored by the model that was serving:
 
-| | 100 healthy live reviews | 300 "harsh" live reviews | Retrained on that batch: 100 held-back reviews (champion on the same) |
+| | 100 healthy reviews (version 1) | 300 "harsh" reviews (version 1) | 165 new "harsh" reviews after retraining (version 4) |
 |---|---|---|---|
-| Score MAE | 0.95 | 1.15 (drift check: DRIFT) | 1.07 (1.18) |
-| Recommended accuracy | 95.0% | 89.0% | 87.0% (85.0%) |
+| Score MAE | 0.95 | 1.15 (drift check: DRIFT) | 0.55 (drift check: no drift) |
+| Recommended accuracy | 95.0% | 89.0% | 97.0% |
 
-The retrained adapter was better than the champion on the drifted reviews but failed the gate (MAE <= 1.0, recommended
->= 90%), so it was not registered and version 1 still serves: the drift was detected, not yet fixed. Why, and the
-earlier runs: [docs/llm.md](docs/llm.md#the-gate-and-what-it-measured).
+The drift check fired on the harsh reviews. A first retraining that mixed 500 old reviews into the new ones failed the
+gate (MAE <= 1.0, recommended >= 90%) and was not registered. A second one, on the new reviews only, passed, beat the
+champion on the same held-back reviews, became version 4, and the server loaded it by itself. These trainings were
+started by hand on a Colab T4; the automatic path (a RunPod GPU started by GitHub) has not trained a model yet. Why
+the first one failed, and the earlier runs: [docs/llm.md](docs/llm.md#the-gate-and-what-it-measured).
 
 ## Data and licence
 
