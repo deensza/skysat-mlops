@@ -16,7 +16,9 @@ exits. Two more guards against a forgotten pod: a timer inside the pod deletes i
 
 GPUs are tried cheapest first (community cloud prices read from RunPod's catalog on 2026-11-16, $/hour):
 RTX 3070 8 GB 0.13, RTX A4000 16 GB 0.17, RTX 3080 Ti 12 GB 0.18, RTX A4500 20 GB 0.19, RTX 4000 Ada 20 GB 0.20,
-RTX 3090 24 GB 0.22. A 1.5B model with LoRA and gradient checkpointing fits 8 GB (measured on an RTX 4070 8 GB).
+RTX 3090 24 GB 0.22, and as a last resort RTX 4090 24 GB 0.34 (price of 2026-11-17): on that day all six cheaper
+types were out of stock at once and a training started by the drift check rented nothing. A 1.5B model with LoRA and
+gradient checkpointing fits 8 GB (measured on an RTX 4070 8 GB).
 
 Env passed to the pod (from this process's env): QUEUE_URL, QUEUE_USER, QUEUE_PASSWORD (the gateway's `trainer`
 login), MLFLOW_TRACKING_URI / _USERNAME / _PASSWORD (DagsHub). They are visible in the pod's settings on RunPod.
@@ -37,7 +39,8 @@ import urllib.request
 API = "https://api.runpod.io/v2"
 IMAGE = "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
 GPUS = ["NVIDIA GeForce RTX 3070", "NVIDIA RTX A4000", "NVIDIA GeForce RTX 3080 Ti", "NVIDIA RTX A4500",
-        "NVIDIA RTX 4000 Ada Generation", "NVIDIA GeForce RTX 3090"]
+        "NVIDIA RTX 4000 Ada Generation", "NVIDIA GeForce RTX 3090",
+        "NVIDIA GeForce RTX 4090"]  # the last one only when none of the cheaper ones is free
 REPO = "https://github.com/deensza/skysat-mlops.git"
 PASS_ENV = ["QUEUE_URL", "QUEUE_USER", "QUEUE_PASSWORD",
             "MLFLOW_TRACKING_URI", "MLFLOW_TRACKING_USERNAME", "MLFLOW_TRACKING_PASSWORD"]

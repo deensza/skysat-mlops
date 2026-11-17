@@ -105,7 +105,7 @@ GitHub checks drift and opens an issue; the Train workflow can rent the GPU (bui
 - **drift.yml** runs hourly, judges only the serving model, opens one issue on DRIFT and, only if `AUTO_RETRAIN` is
   `true`, calls **train.yml**
 - **train.yml** has a cooldown (default 6 h), rents nothing if fewer than 300 reviews are pending, trains on the cheapest
-  free RunPod GPU for at most 45 minutes (at most about $0.17), then checks that no pod is left
+  free RunPod GPU for at most 45 minutes (at most about $0.26), then checks that no pod is left
 - Built, but **not yet switched on** (the repository owner adds the secrets) and **not yet run on GitHub**
 
 > Notes: say plainly that the loop is code and configuration; it has not run on GitHub yet. A full training run on
