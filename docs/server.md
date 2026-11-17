@@ -84,14 +84,24 @@ The loop was switched on on 17 Nov 2026: the secrets and variables below are set
   The other two were tests of the launcher that train nothing. Table: [llm.md](llm.md#what-ran-on-runpod-17-nov-2026).
 - **The Train workflow, called by the drift check** at 13:12 UTC: the cooldown and the queue check passed (319 reviews
   ready), then RunPod had none of the six GPU types then in the list free ("No GPU had capacity"). Nothing was
-  rented, the job failed, and the cooldown did not start. The RTX 4090 was then added as a seventh type. A second
-  drift check by hand at 13:38 UTC (version 4, 528 requests, MAE 1.203 ± 0.074, recommended 0.818 ± 0.017, "DRIFT")
-  called Train again: all seven types were out of stock, nothing was rented.
-- **Not seen yet:** a training started by a drift alarm, the promotion after it, and a drift check that says
-  "no drift" for the new version.
+  rented, the job failed, and the cooldown did not start. The RTX 4090 was then added as a seventh type. Two more
+  drift checks by hand, at 13:38 UTC (528 requests, MAE 1.203 ± 0.074, recommended 0.818 ± 0.017) and 14:24 UTC (560
+  requests, MAE 1.211 ± 0.072, recommended 0.820 ± 0.016), said "DRIFT" and called Train again: all seven types were
+  out of stock, nothing was rented.
+- **The whole chain, once.** Drift check 44111118456, started by hand at 15:09 UTC: version 4, 591 requests, MAE
+  1.230 ± 0.070, recommended 0.812 ± 0.016, "DRIFT". Its Train job: cooldown and queue check passed; RTX 3070 and RTX
+  A4000 out of stock; a pod "created on NVIDIA GeForce RTX 3080 Ti" at 15:10:17 UTC and "is gone" at 15:15:49 UTC
+  (5 min 32 s; at $0.18/h about 2 cents). "From the server: reviews marked trained 2694 -> 3099, serving model 4 ->
+  6"; `registered: True`, version 6, `promoted: True`; "Trainer pods left behind: 0". The run ended green. This
+  rental starts the 6 hour cooldown. Version 6's gate numbers are in its MLflow run; the pod's log could not be read.
+- **After the promotion:** version 6 had not been judged on live traffic when this was written.
+- **Not done by the workflow:** the issue stays open until someone closes it.
 - **The hourly schedule.** `drift.yml` reached `main` at 06:17 UTC with the schedule `35 * * * *`. GitHub started no
   scheduled run in the seven hourly slots from 06:35 to 12:35 UTC, although the workflow was listed as active. At
-  13:08 UTC the workflow was disabled and enabled again. No scheduled run had appeared by 13:40 UTC (the 13:35 slot included). The cause is not known.
+  13:08 UTC the workflow was disabled and enabled again.
+  By 14:35 UTC no scheduled run had appeared: nine hourly slots in a row since the workflow reached `main`, two of
+  them after it was enabled again. The cause is not known. Until the schedule works, the drift check has to be started
+  by hand (`gh workflow run drift.yml`) or by something else that has a clock.
 - **On GitHub the Train runs look failed** even when they trained: RunPod answers 403 to this project's API key on
   the pod-log endpoint, so the launcher reads the outcome from this server (`/queue/stats`, `/model`). A run that
   registered a version ends green; a run that registered nothing ends red, whether the gate failed, there were too few
@@ -162,9 +172,10 @@ Enable them again afterwards.
 
 - A training run: the Train workflow stops the pod after 45 minutes; at the dearest GPU in the list (an RTX 4090 at
   $0.34/h, tried only when the six cheaper types are all out of stock) that is at most about $0.26 per run. With the
-  6 h cooldown there are at most 4 automatic runs a day. Measured on 17 Nov 2026: each of the three hand-started runs
-  held an RTX 3070 ($0.13/h) for about 5 minutes, about one cent by the price list (the bill itself was not read). A
-  run that finds no free GPU costs nothing.
+  6 h cooldown there are at most 4 automatic runs a day. Measured on 17 Nov 2026, by the price list (the bill itself
+  was not read): each of the three hand-started runs held an RTX 3070 ($0.13/h) for about 5 minutes, about one cent;
+  the run started by the drift check held an RTX 3080 Ti ($0.18/h) for 5 min 32 s, about 2 cents. A run that finds no
+  free GPU costs nothing.
 - The VM: `Standard_B2as_v2` in austriaeast is $0.0864 per hour on Azure's price list, about $2 a day, from the Azure
   for Students credit. No card is charged: when the credit ends, Azure disables the subscription. Check Cost
   Management. Deallocate the VM when it is not needed:

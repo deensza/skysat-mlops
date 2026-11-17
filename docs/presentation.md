@@ -20,10 +20,12 @@ Open points (tick when done):
 - [ ] Record the video ([demo/video.md](../demo/video.md)) and put its link on slide 10
 - [x] The repository owner adds the secrets and variables ([server.md](server.md#switching-it-on)): done 17 Nov 2026
 - [x] Run each part once for real: done 17 Nov 2026 (drift.yml by hand; train.yml by hand on a RunPod RTX 3070)
-- [ ] The automatic chain end to end (a drift alarm rents the GPU, trains, promotes): on 17 Nov the alarm called
-      train.yml twice and RunPod had no free GPU
-- [ ] Decide which version serves at the demo: the server's champion is version 4, trained on harsh reviews only and
-      not measured on healthy ones. `make llm-promote VERSION=1 SHARED=yes` moves the alias back to version 1
+- [x] The automatic chain end to end: done 17 Nov 2026, 15:09 UTC (drift alarm -> Train -> RTX 3080 Ti -> version 6
+      promoted); the drift check itself was started by hand
+- [ ] GitHub's hourly schedule did not start the drift check once on 17 Nov: find out why, or start it by hand
+- [ ] Decide which version serves at the demo: the server's champion is version 6 (since 17 Nov 2026), trained on
+      drifted reviews only and not measured on healthy ones. `make llm-promote VERSION=1 SHARED=yes` moves the alias
+      back to version 1
 - [ ] Freeze it before presenting: `AUTO_RETRAIN` to `false` ([server.md](server.md)); the deploy job is already off
 - [ ] Upload slides (with the GitHub link) and code to Moodle
 - [ ] Rehearse once with a timer (target: ~10 min slides + 3 min video + questions)
@@ -89,12 +91,15 @@ Measured through the server, 16 and 17 Nov 2026 ([llm.md](llm.md#through-the-ser
 | Retraining 1: new reviews + 500 replayed old ones | 100 held back | 1.07 | 87.0% | **fails the gate**, not registered |
 | Retraining 2: the new reviews only, 3 epochs | 100 held back | 0.60 | 93.0% | passes; champion on the same reviews 1.13, 90.0%; becomes **version 4** |
 | Version 4, live: new harsh reviews | 165 | 0.551 | 97.0% | drift check: no drift |
-| RunPod, 17 Nov (RTX 3070, about 5 min, about one cent) | 100 held back | 0.33 | 93.0% | passes, registered as version 5; combined 0.858 against the champion's 0.861, so version 4 stays |
+| RunPod by hand, 17 Nov (RTX 3070, about 5 min, about one cent) | 100 held back | 0.33 | 93.0% | passes, registered as version 5; combined 0.858 against the champion's 0.861, so version 4 stays |
+| Version 4, live, after reviews with a stronger label shift | 591 | 1.230 | 81.2% | drift check: **DRIFT**, and it calls the Train workflow |
+| RunPod by the drift alarm, 17 Nov (RTX 3080 Ti, 5.5 min, about 2 cents) | 405 in the batch | in MLflow | in MLflow | passes and beats version 4: **version 6**, loaded by the server |
 
 - Gate limits: MAE <= 1.0, recommended >= 0.90, complaint >= 0.65; a new adapter must also beat the champion on the same reviews
 - Real 2019-2022 drift does **not** hurt the model, so the drift is simulated (`simulator/scenarios.py`)
-- Retrainings 1 and 2 ran on a Colab T4 started by hand, before the RunPod path was tried; the last row is the RunPod path
-- Not measured: version 4 on healthy reviews
+- Retrainings 1 and 2 ran on a Colab T4 started by hand, before the RunPod path was tried; the RunPod rows are the
+  path the project uses
+- Not measured: versions 4 and 6 on healthy reviews. Version 6's gate numbers are in MLflow: copy them here
 
 > Notes: the earlier offline numbers of 13 Nov (v1 0.91 / 94.5%, harsh 1.18 / 89.5%, v2 0.41 / 95.5%) were measured
 > from files on a PC; they are in [llm.md](llm.md). The slide shows what the server measured.
@@ -125,12 +130,14 @@ Measured through the server, 16 and 17 Nov 2026 ([llm.md](llm.md#through-the-ser
   about 5 minutes on an RTX 3070, about one cent), then checks that no pod is left
 - **Switched on since 17 Nov 2026.** That day: train.yml rented a GPU three times by hand and registered version 5;
   the drift check found drift on version 4 and called train.yml by itself
-- **Not seen yet**: a training started by the alarm. Both times the alarm called train.yml, RunPod had no free GPU
-  on our list, and nothing was rented
+- The alarm called train.yml four times: three times RunPod had no free GPU on our list (nothing rented); the fourth
+  time it rented an RTX 3080 Ti for 5.5 minutes (about 2 cents), trained on a batch of 405 reviews and **promoted
+  version 6**; the server loaded it
+- Not seen: GitHub's hourly schedule starting the drift check. Every check that day was started by hand
 
 > Notes: say plainly how far the automatic chain got ([server.md](server.md#what-has-run-17-nov-2026)).
-> On 17 Nov the alarm called Train twice and RunPod was out of stock both times; GitHub's hourly schedule
-> had not fired by then. Also say: on GitHub a Train run looks failed unless it registered a version, because RunPod does not
+> The chain ran end to end once on 17 Nov (15:09 UTC), but the drift check was started by hand: GitHub's schedule did
+> not fire that day. Version 6 had not been judged on live traffic when this was written. Also say: on GitHub a Train run looks failed unless it registered a version, because RunPod does not
 > let our key read the pod's log; the outcome comes from the server.
 
 ## 9b. MLOps level 2, in small
@@ -140,8 +147,8 @@ Measured through the server, 16 and 17 Nov 2026 ([llm.md](llm.md#through-the-ser
 - SkySat: queue -> trainer -> gate -> registry (level 1); `ci.yml` and `drift.yml` -> `train.yml` (level 2)
 - Missing for a real level 2: an orchestrator such as Kubeflow or Airflow (GitHub Actions plays that part), a feature
   store, data validation beyond the intake's checks, a staging environment
-- The loop has been on since 17 Nov 2026; the deploy step is still done by hand. A training started by the alarm
-  has not been seen yet (no free GPU on 17 Nov)
+- The loop has been on since 17 Nov 2026; the deploy step is still done by hand. The chain ran end to end
+  once on 17 Nov 2026; the hourly schedule has not fired, so each check was started by hand
 
 > Notes: the three levels are from Google's "MLOps: Continuous delivery and automation pipelines in machine learning".
 > Detail: [architecture.md](architecture.md).
@@ -164,7 +171,8 @@ Video: *(link)* · Script: [demo/video.md](../demo/video.md)
 - Monitoring that stores no text is enough to see the model degrade
 - After drift, mixing old reviews into the retraining kept the old labels alive: it failed the gate; the new reviews
   alone passed
-- Rented GPUs are cheap but not always there: on 17 Nov every GPU type on our list was out of stock for a while
+- Rented GPUs are cheap but not always there: on 17 Nov every GPU type on our list was out of stock for two hours
+- A schedule is not a guarantee: GitHub's hourly cron did not start our drift check on 17 Nov
 
 ## 12. Summary and questions
 
@@ -180,5 +188,5 @@ Video: *(link)* · Script: [demo/video.md](../demo/video.md)
 - Real drift did not hurt, so is the drift demo fake? (The scenario is simulated and we say so; the monitoring and the retrain path are real)
 - What happens if MLflow is down? (the API keeps the adapter it has and retries; a logging failure never breaks serving)
 - How do you stop a worse adapter from going to production? (the gate, and it must beat the champion on the same reviews)
-- Is retraining automatic? (yes, since 17 Nov 2026: a drift alarm starts the Train workflow, which rents a RunPod GPU. On 17 Nov the alarm called it twice and RunPod had no free GPU, so the trainings so far were started by hand)
+- Is retraining automatic? (yes, since 17 Nov 2026: a drift alarm starts the Train workflow, which rents a RunPod GPU. It ran end to end once on 17 Nov: drift on version 4, a rented RTX 3080 Ti, version 6 promoted, about 2 cents. The drift check was started by hand, because GitHub's hourly schedule did not fire)
 - Where does production run, and what does it store? (an always-on VM, [server.md](server.md); numbers only, never review text)

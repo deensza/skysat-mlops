@@ -89,9 +89,9 @@ What a real level 2 system has that this one does not:
 - No feature store, and data validation is only the intake's request checks.
 - One small server and no staging environment: the new image goes straight to the only server.
 - The deploy step is done by hand: the deploy job is off.
-- The loop is young: switched on on 17 Nov 2026. On that day the drift check found drift and called the Train workflow by itself, twice; RunPod had
-no free GPU either time, so the automatic path has not trained a model yet (the Train workflow did train on RunPod when
-started by hand).
+- The loop is young: switched on on 17 Nov 2026.
+  That day the chain ran end to end once: a drift alarm called the Train workflow, which rented a GPU, trained, and
+  promoted version 6. Each drift check was started by hand: GitHub's hourly schedule has not started one yet.
 
 ## 3. The services (docker-compose.yml)
 
@@ -121,7 +121,8 @@ the read-only Grafana database user and the restart policies ([server.md](server
 5. The API sees the new alias within `MODEL_RELOAD_SECONDS`, loads the adapter, deletes the old one.
 6. Drift: `make simulate ... SCENARIO=harsh` sends reviews a harsher survey scored; the live MAE rises past the gate,
    and the next batch (those newest reviews, once scored, trained with `--replay 0 --epochs 3`) gives an adapter that
-   beats the champion on them. On the server on 17 Nov 2026 that was version 4 ([llm.md](llm.md#the-gate-and-what-it-measured)).
+   beats the champion on them. On the server that was version 4 (17 Nov 2026, started by hand) and then version 6
+   (the same day, started by the drift check); see [llm.md](llm.md#the-gate-and-what-it-measured).
 
 ## 5. Life of a request
 
@@ -134,9 +135,10 @@ Malformed answers are `null` fields and count as wrong in the live measures.
 
 What has run, as of 17 Nov 2026: `ci.yml` on every pull request and push to `main` (tests and image; never its
 deploy job); `drift.yml` by hand; `train.yml` by hand three times, each renting a RunPod GPU, and as a job of the drift
-check. The drift check found drift and called `train.yml` twice (17 Nov, 13:12 and 13:38 UTC); both times no
-GPU was free and nothing was rented. Not seen yet: a training started by a drift alarm, and a scheduled run of
-`drift.yml`.
+check.
+The drift check called `train.yml` four times on 17 Nov: three times no GPU was free and nothing was
+rented; the fourth time (15:09 UTC) it rented an RTX 3080 Ti, trained, and promoted version 6
+([server.md](server.md#what-has-run-17-nov-2026)). Not seen yet: a scheduled run of `drift.yml`.
 
 - `ci.yml`: pytest (no torch; the queue's SQL and `tests/test_pipeline.py` against a PostgreSQL service), `nginx -t` on
   both gateway configs, `docker compose config` for both compose files, build the `llm/Dockerfile` image. It runs for
@@ -152,8 +154,9 @@ GPU was free and nothing was rented. Not seen yet: a training started by a drift
   `true`, calls `train.yml` with `--replay 0 --epochs 3`: the new reviews only, because after drift the old labels are
   the problem (with the default, 500 replayed reviews, the retraining of 16 Nov failed the gate; without them it
   passed, see [llm.md](llm.md#the-gate-and-what-it-measured)). A scheduled run with missing secrets is skipped with a
-  warning. On 17 Nov 2026 GitHub started no scheduled run for at least seven hours after the workflow reached
-  `main` ([server.md](server.md#what-has-run-17-nov-2026)).
+  warning.
+  On 17 Nov 2026 GitHub started no scheduled run at all ([server.md](server.md#what-has-run-17-nov-2026)): every
+  run that day was started by hand.
 - `train.yml` ("Train"): started by `drift.yml` or by hand. It checks its settings, respects a cooldown (variable
   `TRAIN_COOLDOWN_HOURS`, default 6: no automatic run if a GPU was rented less than that long ago, by either workflow,
   whether that training worked or not; a run that found no free GPU rented nothing and does not count; a run started
@@ -171,8 +174,9 @@ GPU was free and nothing was rented. Not seen yet: a training started by a drift
   a cancelled workflow, a network error) with three tries, and a network blip does not end the wait. The pod waits
   90 s after the trainer ends so the launcher could read the last log lines.
 - If none of the GPU types in `GPUS` is free, the launcher stops with "No GPU had capacity": nothing is rented, the
-  run fails, and the next drift check may try again. It happened on 17 Nov 2026 at 13:12 UTC with the six types then
-  in the list; the RTX 4090 ($0.34/h) was added as a seventh, tried last, and at 13:38 UTC all seven were out of stock.
+  run fails, and the next drift check may try again. It happened three times on 17 Nov 2026: at 13:12 UTC with the six
+  types then in the list, and at 13:38 and 14:24 UTC with seven (the RTX 4090, $0.34/h, was added in between as the
+  last one tried). At 15:10 UTC an RTX 3080 Ti was free.
 - The settings the loop needs (secrets and variables) are listed in [server.md](server.md#switching-it-on).
 
 ## 7. Where things live
@@ -202,12 +206,13 @@ GPU was free and nothing was rented. Not seen yet: a training started by a drift
 - A live review can be trained on only after the model has scored it (since 17 Nov 2026), and the server scores
   roughly 0.85 reviews a minute: 300 new reviews are ready for training about six hours after they arrive.
 - The automatic loop (`drift.yml` -> `train.yml`) needs the secrets and variables in
-  [server.md](server.md#switching-it-on) and `AUTO_RETRAIN=true`. It has been on since 17 Nov 2026. On that day the drift check found drift and called the Train workflow by itself, twice; RunPod had
-no free GPU either time, so the automatic path has not trained a model yet (the Train workflow did train on RunPod when
-started by hand).
+  [server.md](server.md#switching-it-on) and `AUTO_RETRAIN=true`. It has been on since 17 Nov 2026.
+  That day the chain ran end to end once: a drift alarm called the Train workflow, which rented a GPU, trained, and
+  promoted version 6. Each drift check was started by hand: GitHub's hourly schedule has not started one yet.
 - The pod's log cannot be read with this project's RunPod key (403), so a training that registered nothing ends as a
   failed run without saying why: the gate, too few reviews, or a crash.
-- Every GPU type in the list can be out of stock at once; then nothing trains until a later drift check finds one.
+- Every GPU type in the list can be out of stock at once; then nothing trains until a later drift check finds one
+  (on 17 Nov 2026 that took two hours).
 - The trainings of 16 and 17 Nov that produced versions 3 and 4 did not run on RunPod: they ran on a Google Colab T4
   started by hand. Colab is not a supported way to train; there is no Colab code in the repository. The RunPod runs
   are in [llm.md](llm.md#runpod-the-trainers-gpu).
