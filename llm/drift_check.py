@@ -117,7 +117,7 @@ def main() -> None:
         drift, rows = decide(summary, args.min_labelled)
         report = markdown(summary, drift, rows, version)
     except (urllib.error.URLError, TimeoutError, OSError, ValueError, KeyError) as err:
-        drift, report = None, f"## Drift check: FAILED\n\nCould not read {args.url}{reading}: {err}"
+        drift, report = None, f"## Drift check: FAILED\n\nCould not read the server's {reading}: {err}"
     print(report)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:

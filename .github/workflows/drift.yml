@@ -12,7 +12,7 @@
 # Switch it off: `gh workflow disable drift.yml`, or leave AUTO_RETRAIN unset or not `true` (the issue is still opened).
 # By hand: Actions -> Drift check -> Run workflow, or `gh workflow run drift.yml`.
 # Setup (repository owner, once; see docs/server.md):
-#   secrets    SKYSAT_SERVER, SKYSAT_LOGIN (the gateway login for GitHub), and for retraining RUNPOD_API_KEY,
+#   secrets    SKYSAT_SERVER, SKYSAT_LOGIN (the gateway login for GitHub), and for retraining RUNPOD_API_KEY or RUNPOD_API,
 #              SKYSAT_TRAINER_PASSWORD, MLFLOW_TRACKING_PASSWORD
 #   variables  AUTO_RETRAIN (`true` starts the training), MLFLOW_TRACKING_URI, MLFLOW_TRACKING_USERNAME,
 #              optional TRAIN_COOLDOWN_HOURS
@@ -83,6 +83,7 @@ jobs:
 
       - name: Open an issue on drift
         if: steps.drift.outputs.drift == 'true'
+        continue-on-error: true  # a failed `gh issue` must not stop the retraining, which needs this job to succeed
         env:
           VERSION: ${{ steps.drift.outputs.version }}
           AUTO_RETRAIN: ${{ vars.AUTO_RETRAIN }}
@@ -92,7 +93,7 @@ jobs:
             echo "An issue about this is already open"; exit 0
           fi
           if [ "$AUTO_RETRAIN" = true ]; then
-            next="A training run was started automatically (see the Train run linked from this workflow run)."
+            next="The Train workflow was called automatically (the retrain job of this workflow run); it trains unless the cooldown or the 300-review minimum stops it."
           else
             next="Automatic retraining is off (repository variable AUTO_RETRAIN): start the Train workflow by hand, or run \`make train-remote\` from a PC."
           fi

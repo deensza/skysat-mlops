@@ -5,7 +5,8 @@
     python -m llm.runpod_pod --sweep                         # delete trainer pods left behind (exit 1 if any)
 
 With --wait the exit code is the trainer's (1 if the log never showed it), and with $GITHUB_OUTPUT set it writes
-exit_code, registered, version and promoted for the workflow (.github/workflows/train.yml).
+pod_id (as soon as a pod exists), exit_code, registered, version and promoted for the workflow
+(.github/workflows/train.yml).
 
 The pod clones this repo's --branch from GitHub (the code must be pushed), installs transformers/peft/mlflow on the
 image's own PyTorch, downloads the base model, runs the trainer against QUEUE_URL and deletes itself when the trainer
@@ -39,6 +40,7 @@ PASS_ENV = ["QUEUE_URL", "QUEUE_USER", "QUEUE_PASSWORD",
             "MLFLOW_TRACKING_URI", "MLFLOW_TRACKING_USERNAME", "MLFLOW_TRACKING_PASSWORD"]
 PACKAGES = "transformers==5.20.2 peft==0.21.2 mlflow-skinny==3.17.1 pandas==2.2.3"
 POD_NAME = "skysat-trainer"
+DEAD = ("EXITED", "ERROR", "FAILED", "TERMINATED")  # pod states in which the container no longer runs
 
 # Runs inside the pod. Every way out ends in delete_pod; the background timer is the last resort.
 POD_SCRIPT = r"""
@@ -54,7 +56,7 @@ mkdir -p /workspace && cd /workspace && git clone -q --depth 1 -b "$BRANCH" "$RE
   && pip install -q --root-user-action=ignore $PACKAGES \
   && GIT_COMMIT=$(git rev-parse HEAD) python -u -m llm.trainer $TRAINER_ARGS
 echo "trainer exit code $?"
-sleep 45  # the launcher reads this log every 20 s: give it time to see the last lines before the pod is gone
+sleep 90  # the launcher reads this log about every 40 s: give it time to see the last lines before the pod is gone
 delete_pod
 sleep 600
 """
@@ -101,8 +103,15 @@ def launch(gpus=None, branch: str | None = None, trainer_args: str | None = None
             pod = request("POST", "/pods", pod_body(gpu, branch, trainer_args, max_minutes))
         except urllib.error.HTTPError as err:
             errors.append(f"{gpu}: {err.code} {err.read().decode(errors='replace')[:200]}")
+            if err.code in (401, 403):  # not a capacity problem: another GPU type will not help
+                raise RuntimeError(f"RunPod refused the API key: {errors[-1]}") from None
             log(f"No {gpu}: {errors[-1]}")
             continue
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as err:
+            # the answer was lost: the pod may exist without this process knowing its id
+            log(f"Creating the pod failed without an answer ({err}): deleting any trainer pod that was made")
+            sweep(log)
+            raise RuntimeError(f"Could not reach RunPod to create the pod: {err}") from None
         log(f"Pod {pod.get('id')} created on {gpu} (branch {branch}, trainer args '{trainer_args}')")
         return pod
     raise RuntimeError("No GPU had capacity:\n" + "\n".join(errors))
@@ -118,8 +127,9 @@ def delete(pod_id: str, log=print) -> bool:
         except urllib.error.HTTPError as err:
             if err.code == 404:
                 return True
-        except (urllib.error.URLError, TimeoutError, OSError):
-            pass
+            log(f"Deleting pod {pod_id}: {err.code}")
+        except (urllib.error.URLError, TimeoutError, OSError) as err:
+            log(f"Deleting pod {pod_id}: {err}")
         time.sleep(5)
     log(f"POD DELETE FAILED: delete pod {pod_id} by hand in the RunPod console")
     return False
@@ -146,7 +156,10 @@ def follow(pod_id: str, max_minutes: int, log=print) -> dict:
     try:
         while True:
             try:
-                request("GET", f"/pods/{pod_id}", timeout=30)
+                status = request("GET", f"/pods/{pod_id}", timeout=30).get("status")
+                if status in DEAD:  # still listed, still billed, and it will print nothing more
+                    log(f"Pod {pod_id} is {status}")
+                    break
             except urllib.error.HTTPError as err:
                 if err.code == 404:
                     log(f"Pod {pod_id} is gone")
@@ -169,7 +182,9 @@ def follow(pod_id: str, max_minutes: int, log=print) -> dict:
 def sweep(log=print) -> int:
     """Deletes every pod named like a trainer pod that is still there. Returns how many it found: after a training
     run the answer must be 0, so a workflow can fail loudly on anything else."""
-    pods = [p for p in request("GET", "/pods").get("pods", []) if str(p.get("name", "")).startswith(POD_NAME)]
+    listed = request("GET", "/pods")
+    listed = listed if isinstance(listed, list) else listed.get("pods", [])
+    pods = [p for p in listed if str(p.get("name", "")).startswith(POD_NAME)]
     for p in pods:
         log(f"Trainer pod {p.get('id')} was still there")
         delete(p["id"], log)
@@ -179,7 +194,7 @@ def sweep(log=print) -> int:
 def _print_logs(pod_id: str, seen: set, log) -> None:
     """The log is a Server-Sent Events stream: read for a few seconds, print lines not printed yet."""
     key = os.environ["RUNPOD_API_KEY"]
-    req = urllib.request.Request(f"{API}/pods/{pod_id}/logs?source=container",
+    req = urllib.request.Request(f"{API}/pods/{pod_id}/logs?source=container&tail=1000",
                                  headers={"Authorization": f"Bearer {key}", "Accept": "text/event-stream"})
     started = time.time()
     try:
@@ -222,6 +237,9 @@ def main() -> int:
         print(json.dumps(body, indent=2))
         return 0
     pod = launch(args.gpu, args.branch, args.trainer_args, args.max_minutes)
+    if os.environ.get("GITHUB_OUTPUT"):  # at once: the workflow's cooldown counts runs that rented a pod
+        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+            f.write(f"pod_id={pod.get('id')}\n")
     if not args.wait:
         print(f"Not waiting. Delete it by hand if needed: curl -X DELETE -H 'Authorization: Bearer $RUNPOD_API_KEY' "
               f"{API}/pods/{pod['id']}")

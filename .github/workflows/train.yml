@@ -3,14 +3,15 @@
 # registers the model in MLflow and promotes it only if it beats the champion. The server then loads the new
 # champion by itself within a minute. The run's summary page shows the queue and the serving version before and after.
 # It never trains with fewer than 300 pending reviews (no pod is started), and a run started by the drift check
-# (reason other than "by hand") waits for the cooldown (TRAIN_COOLDOWN_HOURS, default 6) after the last good run.
+# (reason other than "by hand") waits for the cooldown (TRAIN_COOLDOWN_HOURS, default 6) after the last run that
+# rented a GPU. A run that found no free GPU rented nothing and does not count.
 # Never two runs at once. A last step deletes any trainer pod that is still there; if it finds one, the run fails.
 #
 # By hand: Actions -> Train -> Run workflow (reason and trainer arguments are optional), or `gh workflow run train.yml`.
 # Called by drift.yml when the repository variable AUTO_RETRAIN is `true`.
 # Setup (repository owner, once; see docs/server.md):
-#   secrets    RUNPOD_API_KEY, SKYSAT_SERVER (host name, no https://), SKYSAT_TRAINER_PASSWORD (the gateway's
-#              `trainer` login), MLFLOW_TRACKING_PASSWORD
+#   secrets    RUNPOD_API_KEY (RUNPOD_API is read too), SKYSAT_SERVER (host name, no https://),
+#              SKYSAT_TRAINER_PASSWORD (the gateway's `trainer` login), MLFLOW_TRACKING_PASSWORD
 #   variables  MLFLOW_TRACKING_URI, MLFLOW_TRACKING_USERNAME; optional TRAIN_COOLDOWN_HOURS
 name: Train
 
@@ -34,6 +35,8 @@ on:
     secrets:
       RUNPOD_API_KEY:
         required: false
+      RUNPOD_API:
+        required: false
       SKYSAT_SERVER:
         required: false
       SKYSAT_TRAINER_PASSWORD:
@@ -55,13 +58,18 @@ jobs:
   train:
     runs-on: ubuntu-latest
     timeout-minutes: 70
+    # also here: a workflow-level group may not hold when this file is called by the drift check, and the sweep of
+    # one run must never delete the pod of another
+    concurrency:
+      group: train-gpu
+      cancel-in-progress: false
     outputs:
       started: ${{ steps.train.conclusion != 'skipped' }}
       registered: ${{ steps.train.outputs.registered }}
       version: ${{ steps.train.outputs.version }}
       promoted: ${{ steps.train.outputs.promoted }}
     env:
-      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY || secrets.RUNPOD_API }}
       SKYSAT_SERVER: ${{ secrets.SKYSAT_SERVER }}
       QUEUE_URL: ${{ secrets.SKYSAT_SERVER && format('https://{0}', secrets.SKYSAT_SERVER) || '' }}
       QUEUE_USER: trainer
@@ -70,6 +78,7 @@ jobs:
       MLFLOW_TRACKING_USERNAME: ${{ vars.MLFLOW_TRACKING_USERNAME }}
       MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
       COOLDOWN_HOURS: ${{ vars.TRAIN_COOLDOWN_HOURS || '6' }}
       REASON: ${{ inputs.reason }}
       TRAINER_ARGS: ${{ inputs.trainer_args }}
@@ -89,8 +98,9 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      # A run counts if its "Train on a rented GPU" step really ran (worked or failed), whether it was started here or
-      # as a job of the drift check. Runs that were themselves skipped do not count, or the cooldown would never end.
+      # A run counts if it rented a GPU (its "A GPU was rented" step ran), whether the training then worked or failed
+      # and whether it was started here or as a job of the drift check. Runs that were skipped or found no free GPU
+      # do not count, or the cooldown would never end.
       # If the history cannot be read, nothing is rented.
       - name: Cooldown
         id: cooldown
@@ -122,7 +132,7 @@ jobs:
                       continue
                   for job in gh("run", "view", str(run["databaseId"]), "--json", "jobs")["jobs"]:
                       for step in job.get("steps", []):
-                          if step["name"] == "Train on a rented GPU" and step.get("conclusion") != "skipped":
+                          if step["name"] == "A GPU was rented" and step.get("conclusion") != "skipped":
                               note(True, f"Training skipped by the cooldown: a GPU was rented at {created:%Y-%m-%d %H:%M} UTC "
                                          f"(run {run['databaseId']}), the cooldown is {hours:g} hours.")
           except SystemExit:
@@ -155,6 +165,13 @@ jobs:
         id: train
         if: steps.cooldown.outputs.skip != 'true' && steps.before.outputs.skip != 'true'
         run: python3 -m llm.runpod_pod --wait --branch main --max-minutes 45 --trainer-args "$TRAINER_ARGS"
+
+      # The cooldown of later runs looks for this step: it runs only if a pod was really created.
+      - name: A GPU was rented
+        if: always() && steps.train.outputs.pod_id != ''
+        env:
+          POD_ID: ${{ steps.train.outputs.pod_id }}
+        run: echo "Pod $POD_ID was rented for this run"
 
       - name: No pod may be left behind
         if: always() && steps.settings.outcome == 'success'

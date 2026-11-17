@@ -102,7 +102,7 @@ All of this is code and configuration: it has not run on GitHub yet.
 
    | Secrets | Value |
    |---|---|
-   | `RUNPOD_API_KEY` | from RunPod, Settings, API Keys |
+   | `RUNPOD_API_KEY` | from RunPod, Settings, API Keys (a secret named `RUNPOD_API` is read too) |
    | `SKYSAT_SERVER` | the server's host name, no `https://` |
    | `SKYSAT_LOGIN` | `github:` + the password of `github` |
    | `SKYSAT_TRAINER_PASSWORD` | the password of `trainer` |

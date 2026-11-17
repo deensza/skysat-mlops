@@ -256,6 +256,50 @@ def test_runpod_follow_survives_a_network_blip(monkeypatch, no_waiting):
     assert runpod_pod.follow("p1", 90, log=lambda s: None)["exit_code"] == 0
 
 
+def test_runpod_follow_deletes_a_pod_that_stopped_but_is_still_listed(monkeypatch, no_waiting):
+    calls = []
+
+    def stopped(method, path, body=None, timeout=60):
+        calls.append((method, path))
+        return {"status": "EXITED"}
+
+    monkeypatch.setattr(runpod_pod, "request", stopped)
+    runpod_pod.follow("p1", 90, log=lambda s: None)
+    assert calls == [("GET", "/pods/p1"), ("DELETE", "/pods/p1")]  # no waiting for the deadline
+
+
+def test_runpod_launch_stops_at_once_when_the_key_is_refused(monkeypatch):
+    for k in ("QUEUE_URL", "QUEUE_USER", "QUEUE_PASSWORD"):
+        monkeypatch.setenv(k, "x")
+    tried = []
+
+    def refused(method, path, body=None, timeout=60):
+        tried.append(body["gpu"]["id"])
+        raise runpod_pod.urllib.error.HTTPError(path, 401, "Unauthorized", None, __import__("io").BytesIO(b"bad key"))
+
+    monkeypatch.setattr(runpod_pod, "request", refused)
+    with pytest.raises(RuntimeError, match="refused the API key"):
+        runpod_pod.launch(log=lambda s: None)
+    assert len(tried) == 1  # not once per GPU type
+
+
+def test_runpod_launch_sweeps_when_the_answer_to_create_is_lost(monkeypatch, no_waiting):
+    for k in ("QUEUE_URL", "QUEUE_USER", "QUEUE_PASSWORD"):
+        monkeypatch.setenv(k, "x")
+    calls = []
+
+    def lost(method, path, body=None, timeout=60):
+        calls.append((method, path))
+        if method == "POST":
+            raise TimeoutError("timed out")  # RunPod may have made the pod all the same
+        return {"pods": [{"id": "a", "name": "skysat-trainer"}]} if path == "/pods" else {}
+
+    monkeypatch.setattr(runpod_pod, "request", lost)
+    with pytest.raises(RuntimeError, match="Could not reach RunPod"):
+        runpod_pod.launch(log=lambda s: None)
+    assert calls == [("POST", "/pods"), ("GET", "/pods"), ("DELETE", "/pods/a")]
+
+
 def test_runpod_sweep_deletes_only_trainer_pods(monkeypatch, no_waiting):
     fake = FakeRunpod(alive=0, pods=[{"id": "a", "name": "skysat-trainer"}, {"id": "b", "name": "someone-elses-pod"}])
     monkeypatch.setattr(runpod_pod, "request", fake)

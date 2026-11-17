@@ -148,7 +148,7 @@ All three workflows are code and configuration only: none has run on GitHub yet.
   promoted). One training run at a time (`concurrency: train`).
 - `llm/runpod_pod.py --wait` returns the trainer's exit code and writes `exit_code`, `registered`, `version`, `promoted`
   for the workflow. The launcher deletes the pod on any way out (deadline, Ctrl-C, a cancelled workflow, a network
-  error) with three tries, and a network blip does not end the wait. The pod waits 45 s after the trainer ends so the
+  error) with three tries, and a network blip does not end the wait. The pod waits 90 s after the trainer ends so the
   launcher can read the last log lines.
 - The settings the loop needs (secrets and variables) are listed in [server.md](server.md#switching-it-on).
 
