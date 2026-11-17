@@ -274,7 +274,7 @@ def _print_logs(pod_id: str, seen: set, log) -> None:
                 if time.time() - started > 8:
                     break
     except urllib.error.HTTPError as err:
-        _once(log, f"Pod log: HTTP {err.code} {err.read().decode(errors='replace')[:200]}")
+        _once(log, f"Pod log: HTTP {err.code} {err.read().decode(errors='replace').strip()[:200]}")
     except (urllib.error.URLError, TimeoutError, OSError) as err:
         if not got:  # nothing at all: no log yet (the image is still being pulled), or the stream does not answer
             _once(log, f"Pod log: nothing received ({type(err).__name__}: {err})")
