@@ -69,6 +69,10 @@ Each review has a fixed id (`kaggle128k:<row>[:scenario]`), so posting it twice 
   (`scored_at`), so every live review is measured exactly once, by a model that never trained on it. `GET /queue/stats`
   gives `ready`, the pending reviews a trainer could take now; the Train workflow needs 300 of them. Before 17 Nov
   2026 a trainer could claim reviews the model had not scored yet, and those never showed up as live traffic.
+- Reviews are scored oldest first. If the API fails on one review three times (too long for its 150 s limit, or
+  refused), the intake leaves that review out of the live traffic (`given_up` in `GET /queue/stats`) so the ones behind
+  it are scored; it can still be trained on. An API that is down or still loading (no connection, or 503) makes the
+  intake wait and gives up on nothing.
 - `POST /queue/done` with `ok: true` marks the batch trained; `ok: false` puts it back to pending. The trainer sends
   `true` only if a version was registered (not when it failed, the gate failed, or with `--no-mlflow`).
   A claim older than 3 hours (a pod that died) is put back by the intake.

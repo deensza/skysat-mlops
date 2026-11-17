@@ -167,7 +167,7 @@ jobs:
       - name: Train on a rented GPU
         id: train
         if: steps.cooldown.outputs.skip != 'true' && steps.before.outputs.skip != 'true'
-        run: python3 -u -m llm.runpod_pod --wait --branch main --max-minutes 45 --trainer-args "$TRAINER_ARGS"
+        run: python3 -u -m llm.runpod_pod --wait --branch main --max-minutes 45 --trainer-args="$TRAINER_ARGS"
 
       # The cooldown of later runs looks for this step: it runs only if a pod was really created.
       - name: A GPU was rented
@@ -221,8 +221,11 @@ jobs:
               print("A new version was registered and promoted: the server loads it within a minute.")
           elif e("T_REGISTERED") == "true":
               print("A new version was registered but the champion stays: it did not beat it on the same reviews.")
+          elif e("T_REGISTERED") == "false":
+              print("Nothing was registered: the gate failed, there were too few reviews, or the trainer crashed. "
+                    "The batch went back to pending.")
           elif e("T_STARTED") == "true":
-              print("Nothing was registered: the gate failed or the trainer crashed, and the batch went back to pending.")
+              print("The outcome is unknown: neither the pod's log nor the server could be read.")
           else:
               print("No pod was started.")
           PY

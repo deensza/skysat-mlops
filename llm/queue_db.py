@@ -74,7 +74,11 @@ TO_SCORE = f"""
 SELECT {OUT} FROM queue.reviews r WHERE scored_at IS NULL AND status = 'pending' ORDER BY received_at, id LIMIT %(n)s
 """
 MARK_SCORED = "UPDATE queue.reviews SET scored_at = now() WHERE id = %(id)s"
-UNSCORED = "SELECT count(*) FROM queue.reviews WHERE scored_at IS NULL AND status = 'pending'"
+# pending reviews the model has not scored yet, and pending reviews it has (one statement: the two always add up)
+PENDING_SCORED = """
+SELECT count(*) FILTER (WHERE scored_at IS NULL), count(*) FILTER (WHERE scored_at IS NOT NULL)
+FROM queue.reviews WHERE status = 'pending'
+"""
 
 
 def _rows(cur) -> list[dict]:
@@ -119,8 +123,9 @@ def release_stale(conn) -> int:
     return conn.execute(RELEASE_STALE).rowcount
 
 
-def stats(conn) -> dict:
-    """Counts per status, how many wait to be scored, the last arrival. Numbers and dates only, never text."""
+def stats(conn, scored_only: bool = False) -> dict:
+    """Counts per status, how many wait to be scored, how many a trainer could claim now (`ready`: with scored_only,
+    the pending reviews the model has scored), the last arrival. Numbers and dates only, never text."""
     out = {"pending": 0, "claimed": 0, "trained": 0, "last_received": None}
     last = []
     for status, count, received in conn.execute(STATS).fetchall():
@@ -128,7 +133,9 @@ def stats(conn) -> dict:
         last += [received] if received else []
     out["last_received"] = max(last).isoformat() if last else None
     out["total"] = out["pending"] + out["claimed"] + out["trained"]
-    out["unscored"] = int(conn.execute(UNSCORED).fetchone()[0])
+    unscored, scored = conn.execute(PENDING_SCORED).fetchone()
+    out["unscored"] = int(unscored)
+    out["ready"] = int(scored) if scored_only else out["pending"]
     return out
 
 

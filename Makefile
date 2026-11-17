@@ -100,10 +100,10 @@ llm-train: ## LLM: worker 2 on this PC's GPU against QUEUE (local MLflow): make 
 	$(LLM_ENV) $(LLM_PY) -m llm.trainer --queue-url $(QUEUE) $(ARGS)
 
 train-remote: ## LLM: worker 2 on the cheapest free RunPod GPU (needs RUNPOD_API_KEY, QUEUE_URL/USER/PASSWORD; BRANCH must be pushed)
-	$(PY) -m llm.runpod_pod --wait --branch $(BRANCH) --trainer-args "$(ARGS)"
+	$(PY) -m llm.runpod_pod --wait --branch $(BRANCH) --trainer-args="$(ARGS)"
 
 train-remote-dry: ## LLM: print the RunPod request train-remote would send (passwords hidden), start nothing
-	$(PY) -m llm.runpod_pod --dry-run --branch $(BRANCH) --trainer-args "$(ARGS)"
+	$(PY) -m llm.runpod_pod --dry-run --branch $(BRANCH) --trainer-args="$(ARGS)"
 
 llm-promote: ## LLM: make a registered version the champion (the release step after --no-promote): make llm-promote VERSION=2 SHARED=yes
 	@test -n "$(VERSION)" || { echo "usage: make llm-promote VERSION=2 [SHARED=yes]"; exit 1; }

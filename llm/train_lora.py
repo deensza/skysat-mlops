@@ -229,10 +229,15 @@ def run(train_rows: pd.DataFrame, eval_rows: pd.DataFrame, args, params: dict | 
                   f"{'beats' if beats else 'does not beat'} it on the same reviews. "
                   f"Promote it with: make llm-promote VERSION={version.version}")
         elif beats:
-            client.set_registered_model_alias(MODEL_NAME, ALIAS, version.version)
-            result["promoted"] = True
-            print(f"Version {version.version} is the new {ALIAS} (combined {metrics['combined']:.3f}, "
-                  f"previous {'none' if champion_score is None else f'{champion_score:.3f}'})")
+            try:
+                client.set_registered_model_alias(MODEL_NAME, ALIAS, version.version)
+            except Exception as err:  # the version exists: do not fail the batch and train the same reviews twice
+                print(f"Version {version.version} is registered, but the {ALIAS} alias could not be moved "
+                      f"({type(err).__name__}: {err}). Promote it by hand: make llm-promote VERSION={version.version}")
+            else:
+                result["promoted"] = True
+                print(f"Version {version.version} is the new {ALIAS} (combined {metrics['combined']:.3f}, "
+                      f"previous {'none' if champion_score is None else f'{champion_score:.3f}'})")
         else:
             print(f"{ALIAS} stays: its combined {champion_score:.3f} >= {metrics['combined']:.3f}")
     return result
