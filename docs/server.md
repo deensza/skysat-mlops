@@ -103,7 +103,7 @@ The loop was switched on on 17 Nov 2026: the secrets and variables below are set
 - **The hourly schedule.** `drift.yml` reached `main` at 06:17 UTC with the schedule `35 * * * *`. GitHub started no
   scheduled run in the seven hourly slots from 06:35 to 12:35 UTC, although the workflow was listed as active. At
   13:08 UTC the workflow was disabled and enabled again.
-  By 16:35 UTC no scheduled run had appeared: eleven hourly slots in a row since the workflow reached `main`, four of
+  By 17:35 UTC no scheduled run had appeared: twelve hourly slots in a row since the workflow reached `main`, five of
   them after it was enabled again. The cause is not known. Until the schedule works, the drift check has to be started
   by hand (`gh workflow run drift.yml`) or by something else that has a clock.
 - **On GitHub the Train runs look failed** even when they trained: RunPod answers 403 to this project's API key on
