@@ -86,6 +86,21 @@ def counts():
     return {k: s[k] for k in ("pending", "claimed", "trained", "total")}
 
 
+def test_with_live_scoring_the_trainer_gets_only_reviews_the_model_has_scored(pool, monkeypatch):
+    monkeypatch.setattr(intake, "SCORE_URL", "http://api:8000/score")  # live scoring is on
+    posted = sorted(post_many(40, live=True))
+    with pool.connection() as conn:
+        for review_id in posted[:25]:
+            queue_db.mark_scored(conn, review_id)  # the model has answered these 25
+    assert intake.stats()["ready"] == 25 and intake.stats()["pending"] == 40
+    training = Training(registered=True)
+    run_trainer(monkeypatch, training, "--replay", "0")
+    assert training.calls[0]["train"] | training.calls[0]["gate"] == set(posted[:25])
+    assert counts() == {"pending": 15, "claimed": 0, "trained": 25, "total": 40}
+    with pool.connection() as conn:  # the 15 the model has not seen stay live traffic
+        assert {r["id"] for r in queue_db.to_score(conn, 99)} == set(posted[25:])
+
+
 def test_a_registered_version_marks_the_batch_trained(pool, monkeypatch):
     posted = post_many(40)
     training = Training(registered=True)

@@ -4,9 +4,10 @@
 
     POST /reviews       one passenger review with the passenger's own score, recommendation and sub-ratings
                         (the simulator, simulator/replay.py, posts the local dataset's reviews here in date order)
-    POST /queue/claim   {"n": 2000, "replay": 500} -> a batch id, the newest pending reviews, some already-trained ones
+    POST /queue/claim   {"n": 2000, "replay": 500} -> a batch id, the newest pending reviews the model has already
+                        scored as live traffic, and some already-trained ones
     POST /queue/done    {"batch_id": ..., "ok": true}   ok: trained; false: back to pending
-    GET  /queue/stats   counts per status (numbers only)
+    GET  /queue/stats   counts per status, and `ready`: how many a trainer could take now (numbers only)
 
 A background loop sends every new review to the complaint-box API (SCORE_URL, POST /score) with its true labels,
 oldest first, a few at a time: that is the live traffic the dashboard and the drift check measure. Reviews posted
@@ -198,7 +199,8 @@ class DoneRequest(BaseModel):
 def claim(req: ClaimRequest):
     batch_id = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
     with db.connection() as conn:
-        batch = queue_db.claim(conn, batch_id, req.n, req.replay)
+        # with live scoring on, a review is traffic first and training data after: never trained on before measured
+        batch = queue_db.claim(conn, batch_id, req.n, req.replay, scored_only=bool(SCORE_URL))
     log.info("Batch %s: %d new reviews, %d replayed", batch_id, len(batch["reviews"]), len(batch["replay"]))
     return batch
 
@@ -217,6 +219,7 @@ def done(req: DoneRequest):
 def stats():
     with db.connection() as conn:
         s = queue_db.stats(conn)
+    s["ready"] = s["pending"] - (s["unscored"] if SCORE_URL else 0)
     return s | {"intake": {k: v for k, v in state.items() if k != "last_pod_at"}}
 
 
