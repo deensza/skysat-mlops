@@ -1,13 +1,17 @@
 # CI/CD. Pipeline: test -> image -> deploy.
-#   test    every push and pull request, on GitHub's servers: pytest (no torch, no model, no dataset) and the
-#           Docker Compose files (local and server) must be valid.
+#   test    every push and pull request, on GitHub's servers: pytest (no torch, no model, no dataset), including the
+#           pipeline test tests/test_pipeline.py (intake -> queue -> trainer, training stubbed) when CI's PostgreSQL
+#           is there; the Docker Compose files (local and server) must be valid; and both Nginx gateway configs
+#           must pass `nginx -t`.
 #   image   builds the complaint-box API image (llm/Dockerfile; no model inside: the 3 GB base model is downloaded at
 #           the first start); on main it is pushed to ghcr.io (code only, no data, no model).
 #   deploy  only on main, and only once the team's server has a self-hosted runner (label `skysat`) and the
 #           repository variable DEPLOY_TO_RUNNER=true is set: pulls the new image on the server, restarts the
-#           stack and smoke-tests it. Never runs for pull requests (see docs/server.md).
+#           stack and smoke-tests it. If the smoke test fails, it rolls back to the previous image.
+#           Never runs for pull requests (see docs/server.md).
 # The adapter is not part of the image: the API serves whatever MLflow's `skysat-reviews@champion` points to.
-# Nothing trains on GitHub (no GPU): the trainer runs on a RunPod GPU (make train-remote, llm/runpod_pod.py).
+# Training is not in this workflow (no GPU on GitHub): it is .github/workflows/train.yml, started by the drift check
+# or by hand; the trainer runs on a RunPod GPU (llm/runpod_pod.py).
 name: CI/CD
 
 on:
@@ -54,6 +58,14 @@ jobs:
       - name: Check the server's compose files
         run: SITE_ADDRESS=x GRAFANA_ADMIN_PASSWORD=x GRAFANA_DB_PASSWORD=x docker compose -f docker-compose.yml -f docker-compose.server.yml config --quiet
 
+      # A broken gateway config would otherwise only be found on the server.
+      - name: Check the gateway configs
+        run: |
+          for f in nginx.conf nginx.server.conf; do
+            docker run --rm --add-host api:127.0.0.1 --add-host intake:127.0.0.1 --add-host grafana:127.0.0.1 \
+              -v "$PWD/nginx/$f:/etc/nginx/nginx.conf:ro" nginx:1.30.6-alpine nginx -t
+          done
+
   image:
     needs: test
     runs-on: ubuntu-latest
@@ -80,6 +92,7 @@ jobs:
     needs: image
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_TO_RUNNER == 'true'
     runs-on: [self-hosted, skysat]
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: read
@@ -88,11 +101,18 @@ jobs:
       COMPOSE_PROJECT_NAME: skysat-mlops  # the stack already running on the server, so its data is kept
       COMPOSE_FILE: docker-compose.yml:docker-compose.server.yml
       COMPOSE_ENV_FILES: /opt/skysat/.env  # the server's own passwords (docs/server.md); never in git
-      MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}  # the API loads the champion from the shared MLflow
-      MLFLOW_TRACKING_USERNAME: ${{ vars.MLFLOW_TRACKING_USERNAME }}
-      MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+      # The MLflow settings (MLFLOW_TRACKING_URI, _USERNAME, _PASSWORD) are not set here: Compose prefers the shell over
+      # the env file, and an unset repository variable is an empty string that would replace the server's own value.
     steps:
       - uses: actions/checkout@v4
+
+      - name: Remember what is running
+        run: |
+          id=$(docker compose ps -q api 2>/dev/null | head -n 1 || true)
+          previous=""
+          if [ -n "$id" ]; then previous=$(docker inspect --format '{{.Config.Image}}' "$id" 2>/dev/null || true); fi
+          echo "Running now: ${previous:-nothing (first deploy)}"
+          echo "PREVIOUS_IMAGE=$previous" >> "$GITHUB_ENV"
 
       - name: Pull the new API image
         run: |
@@ -106,3 +126,16 @@ jobs:
 
       - name: Smoke test through Nginx  # up to 6 min: the API loads a 3 GB base model at start
         run: bash .github/scripts/smoke-test.sh http://localhost:8080 120  # the gateway's port for the server itself
+
+      # Only the image is rolled back: the compose and gateway files are the new commit's. The gateway check in the
+      # test job is what catches a broken gateway file before it gets here.
+      # The job still ends failed after a rollback: the deploy did fail, and that is intended.
+      - name: Roll back to the previous image
+        if: failure() && env.PREVIOUS_IMAGE != ''
+        run: |
+          API_IMAGE="$PREVIOUS_IMAGE" docker compose up -d --no-build
+          if bash .github/scripts/smoke-test.sh http://localhost:8080 120; then
+            echo "Rolled back to $PREVIOUS_IMAGE: the server is serving again"
+          else
+            echo "ROLLBACK FAILED: the server needs a person"
+          fi

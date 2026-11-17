@@ -2,7 +2,8 @@
 
     POST /score       one airline review -> score out of 10, recommended yes/no, the main complaint
     GET  /health      200 once a model is loaded (used by Docker and Nginx), 503 before
-    GET  /scores/recent?hours=N   aggregates of the last N hours of the prediction log (never text): the drift check reads it
+    GET  /scores/recent?hours=N[&version=V]   aggregates of the last N hours of the prediction log (never text),
+                      of one model version if given: the drift check reads it
     GET  /model       which adapter version is serving, on which base model and prompt version, since when
 
 The base model (Qwen2.5-1.5B-Instruct, ~3 GB) is downloaded once from Hugging Face into HF_HOME and stays frozen;
@@ -240,10 +241,12 @@ SELECT count(*) AS n,
        avg(CASE WHEN true_recommended IS NULL THEN NULL
                 WHEN recommended = true_recommended THEN 1.0 ELSE 0.0 END) AS recommended_accuracy
 FROM llm_scores WHERE created_at >= now() - %(hours)s * interval '1 hour'
+  AND (%(version)s::text IS NULL OR model_version = %(version)s)
 """
 COMPLAINTS = """
 SELECT coalesce(complaint, 'malformed') AS complaint, count(*) AS n FROM llm_scores
-WHERE created_at >= now() - %(hours)s * interval '1 hour' GROUP BY 1 ORDER BY 2 DESC, 1
+WHERE created_at >= now() - %(hours)s * interval '1 hour'
+  AND (%(version)s::text IS NULL OR model_version = %(version)s) GROUP BY 1 ORDER BY 2 DESC, 1
 """
 VERSIONS = """
 SELECT model_version, count(*) AS n FROM llm_scores
@@ -255,15 +258,16 @@ def _num(value, digits=4):
     return None if value is None else round(float(value), digits)
 
 
-def recent_scores(conn, hours: float) -> dict:
+def recent_scores(conn, hours: float, version: str | None = None) -> dict:
     """Aggregates over the last `hours` hours of llm_scores: counts, mean score, MAE (with its sample standard
-    deviation) and recommended accuracy where the true labels were sent, share per complaint. Numbers only, never text."""
-    params = {"hours": hours, "max_error": MAX_ERROR}
+    deviation) and recommended accuracy where the true labels were sent, share per complaint. Numbers only, never text.
+    With `version`, only the answers of that model version are counted; model_versions still shows every version."""
+    params = {"hours": hours, "max_error": MAX_ERROR, "version": version}
     row = conn.execute(SUMMARY, params).fetchone()
     n, mean_score, labelled_score, mae, mae_sd, labelled_rec, rec_acc = row
     complaints = {name: _num(count / n) for name, count in conn.execute(COMPLAINTS, params).fetchall()} if n else {}
-    versions = {str(v): int(count) for v, count in conn.execute(VERSIONS, params).fetchall()}
-    return {"hours": hours, "count": int(n), "mean_score": _num(mean_score, 2),
+    versions = {str(v): int(count) for v, count in conn.execute(VERSIONS, {"hours": hours}).fetchall()}
+    return {"hours": hours, "version": version, "count": int(n), "mean_score": _num(mean_score, 2),
             "labelled_score": int(labelled_score), "mae": _num(mae), "mae_sd": _num(mae_sd),
             "labelled_recommended": int(labelled_rec), "recommended_accuracy": _num(rec_acc),
             "complaint_share": complaints, "model_versions": versions}
@@ -315,8 +319,9 @@ def score(req: ScoreRequest):
 
 
 @app.get("/scores/recent")
-def scores_recent(hours: float = Query(24, gt=0, le=24 * 366)):
-    """What the model answered in the last `hours` hours, as numbers (docs/llm.md, Monitoring and drift check)."""
+def scores_recent(hours: float = Query(24, gt=0, le=24 * 366), version: str | None = Query(None, max_length=50)):
+    """What the model answered in the last `hours` hours, as numbers; with `version`, only that model version's answers
+    (docs/llm.md, Monitoring and drift check)."""
     global _table_ready
     if db is None:
         raise HTTPException(status_code=503, detail="No prediction log: DATABASE_URL is not set")
@@ -325,7 +330,7 @@ def scores_recent(hours: float = Query(24, gt=0, le=24 * 366)):
             if not _table_ready:
                 conn.execute(CREATE_TABLE)
                 _table_ready = True
-            return recent_scores(conn, hours)
+            return recent_scores(conn, hours, version)
     except Exception as err:
         log.warning("Could not read scores: %s", err)
         raise HTTPException(status_code=503, detail="The prediction log is not reachable") from err

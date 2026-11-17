@@ -1,0 +1,225 @@
+# Train: rents a RunPod GPU, trains the LoRA adapter on the newest reviews from the server's queue, and deletes the pod.
+# `python3 -m llm.runpod_pod` does the work: the trainer takes a batch of pending reviews, trains, runs the gate,
+# registers the model in MLflow and promotes it only if it beats the champion. The server then loads the new
+# champion by itself within a minute. The run's summary page shows the queue and the serving version before and after.
+# It never trains with fewer than 300 pending reviews (no pod is started), and a run started by the drift check
+# (reason other than "by hand") waits for the cooldown (TRAIN_COOLDOWN_HOURS, default 6) after the last run that
+# rented a GPU. A run that found no free GPU rented nothing and does not count.
+# Never two runs at once. A last step deletes any trainer pod that is still there; if it finds one, the run fails.
+#
+# By hand: Actions -> Train -> Run workflow (reason and trainer arguments are optional), or `gh workflow run train.yml`.
+# Called by drift.yml when the repository variable AUTO_RETRAIN is `true`.
+# Setup (repository owner, once; see docs/server.md):
+#   secrets    RUNPOD_API_KEY (RUNPOD_API is read too), SKYSAT_SERVER (host name, no https://),
+#              SKYSAT_TRAINER_PASSWORD (the gateway's `trainer` login), MLFLOW_TRACKING_PASSWORD
+#   variables  MLFLOW_TRACKING_URI, MLFLOW_TRACKING_USERNAME; optional TRAIN_COOLDOWN_HOURS
+name: Train
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Why this run starts (shown on the summary page; "by hand" skips the cooldown)
+        default: by hand
+      trainer_args:
+        description: Extra arguments for the trainer (optional)
+        default: ""
+  workflow_call:
+    inputs:
+      reason:
+        type: string
+        default: drift
+      trainer_args:
+        type: string
+        default: ""
+    secrets:
+      RUNPOD_API_KEY:
+        required: false
+      RUNPOD_API:
+        required: false
+      SKYSAT_SERVER:
+        required: false
+      SKYSAT_TRAINER_PASSWORD:
+        required: false
+      SKYSAT_LOGIN:
+        required: false
+      MLFLOW_TRACKING_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+  actions: read  # gh run list (the cooldown)
+
+concurrency:
+  group: train
+  cancel-in-progress: false
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    # also here: a workflow-level group may not hold when this file is called by the drift check, and the sweep of
+    # one run must never delete the pod of another
+    concurrency:
+      group: train-gpu
+      cancel-in-progress: false
+    outputs:
+      started: ${{ steps.train.conclusion != 'skipped' }}
+      registered: ${{ steps.train.outputs.registered }}
+      version: ${{ steps.train.outputs.version }}
+      promoted: ${{ steps.train.outputs.promoted }}
+    env:
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY || secrets.RUNPOD_API }}
+      SKYSAT_SERVER: ${{ secrets.SKYSAT_SERVER }}
+      QUEUE_URL: ${{ secrets.SKYSAT_SERVER && format('https://{0}', secrets.SKYSAT_SERVER) || '' }}
+      QUEUE_USER: trainer
+      QUEUE_PASSWORD: ${{ secrets.SKYSAT_TRAINER_PASSWORD }}
+      MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}
+      MLFLOW_TRACKING_USERNAME: ${{ vars.MLFLOW_TRACKING_USERNAME }}
+      MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      COOLDOWN_HOURS: ${{ vars.TRAIN_COOLDOWN_HOURS || '6' }}
+      REASON: ${{ inputs.reason }}
+      TRAINER_ARGS: ${{ inputs.trainer_args }}
+    steps:
+      - name: Check the settings exist
+        id: settings
+        run: |
+          missing=0
+          for name in RUNPOD_API_KEY SKYSAT_SERVER QUEUE_PASSWORD MLFLOW_TRACKING_URI MLFLOW_TRACKING_USERNAME \
+                      MLFLOW_TRACKING_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "Missing $name (secret or variable; QUEUE_PASSWORD is SKYSAT_TRAINER_PASSWORD, SKYSAT_SERVER is the server): see docs/server.md"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - uses: actions/checkout@v4
+
+      # A run counts if it rented a GPU (its "A GPU was rented" step ran), whether the training then worked or failed
+      # and whether it was started here or as a job of the drift check. Runs that were skipped or found no free GPU
+      # do not count, or the cooldown would never end.
+      # If the history cannot be read, nothing is rented.
+      - name: Cooldown
+        id: cooldown
+        if: env.REASON != 'by hand'
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          from datetime import datetime, timedelta, timezone
+
+          def gh(*args):
+              return json.loads(subprocess.run(["gh", *args], check=True, capture_output=True, text=True, timeout=60).stdout)
+
+          def note(skip, text=""):
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write(f"skip={'true' if skip else 'false'}\n")
+              if text:
+                  with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+                      f.write(text + "\n")
+              raise SystemExit(0)
+
+          hours = float(os.environ["COOLDOWN_HOURS"])
+          since = datetime.now(timezone.utc) - timedelta(hours=hours)
+          try:
+              runs = gh("run", "list", "--limit", "60", "--json", "databaseId,createdAt,workflowName")
+              for run in runs:
+                  created = datetime.fromisoformat(run["createdAt"].replace("Z", "+00:00"))
+                  if (str(run["databaseId"]) == os.environ["GITHUB_RUN_ID"] or created < since
+                          or run["workflowName"] not in ("Train", "Drift check")):
+                      continue
+                  for job in gh("run", "view", str(run["databaseId"]), "--json", "jobs")["jobs"]:
+                      for step in job.get("steps", []):
+                          if step["name"] == "A GPU was rented" and step.get("conclusion") != "skipped":
+                              note(True, f"Training skipped by the cooldown: a GPU was rented at {created:%Y-%m-%d %H:%M} UTC "
+                                         f"(run {run['databaseId']}), the cooldown is {hours:g} hours.")
+          except SystemExit:
+              raise
+          except Exception as err:  # gh failed, or its answer changed shape
+              note(True, f"Training skipped: could not read the run history ({type(err).__name__}).")
+          note(False)
+          PY
+
+      - name: Queue before
+        id: before
+        if: steps.cooldown.outputs.skip != 'true'
+        run: |
+          stats="$(curl -sS --fail --max-time 30 -u "trainer:$QUEUE_PASSWORD" "$QUEUE_URL/queue/stats")"
+          model="$(curl -sS --fail --max-time 30 -u "trainer:$QUEUE_PASSWORD" "$QUEUE_URL/model" || echo '{}')"  # no model yet
+          STATS="$stats" MODEL="$model" python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          s = json.loads(os.environ["STATS"])
+          print("pending=%d" % s["pending"])
+          print("trained=%d" % s["trained"])
+          print("model=%s" % json.loads(os.environ["MODEL"]).get("version"))
+          if s["pending"] < 300:
+              print("skip=true")
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+                  f.write("Too few new reviews to train (%d pending, 300 needed): no pod was started.\n" % s["pending"])
+          PY
+
+      # 45 minutes at the dearest GPU in the list ($0.22/h) is at most about $0.17 per run.
+      - name: Train on a rented GPU
+        id: train
+        if: steps.cooldown.outputs.skip != 'true' && steps.before.outputs.skip != 'true'
+        run: python3 -m llm.runpod_pod --wait --branch main --max-minutes 45 --trainer-args "$TRAINER_ARGS"
+
+      # The cooldown of later runs looks for this step: it runs only if a pod was really created.
+      - name: A GPU was rented
+        if: always() && steps.train.outputs.pod_id != ''
+        env:
+          POD_ID: ${{ steps.train.outputs.pod_id }}
+        run: echo "Pod $POD_ID was rented for this run"
+
+      - name: No pod may be left behind
+        if: always() && steps.settings.outcome == 'success'
+        run: python3 -m llm.runpod_pod --sweep
+
+      - name: Summary
+        if: always()
+        env:
+          COOLDOWN_SKIP: ${{ steps.cooldown.outputs.skip }}
+          BEFORE_SKIP: ${{ steps.before.outputs.skip }}
+          BEFORE_PENDING: ${{ steps.before.outputs.pending }}
+          BEFORE_TRAINED: ${{ steps.before.outputs.trained }}
+          BEFORE_MODEL: ${{ steps.before.outputs.model }}
+          T_REGISTERED: ${{ steps.train.outputs.registered }}
+          T_VERSION: ${{ steps.train.outputs.version }}
+          T_PROMOTED: ${{ steps.train.outputs.promoted }}
+          T_STARTED: ${{ steps.train.conclusion != 'skipped' }}
+        run: |
+          stats="$(curl -sS --fail --max-time 30 -u "trainer:$QUEUE_PASSWORD" "$QUEUE_URL/queue/stats" 2>/dev/null || true)"
+          model="$(curl -sS --fail --max-time 30 -u "trainer:$QUEUE_PASSWORD" "$QUEUE_URL/model" 2>/dev/null || true)"
+          STATS="$stats" MODEL="$model" python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os
+          e = lambda k: os.environ.get(k) or "-"
+          try:
+              s, m = json.loads(os.environ["STATS"]), json.loads(os.environ["MODEL"] or "{}")
+              after = (int(s["pending"]), int(s["trained"]), str(m.get("version", "-"))[:20])
+              note = ""
+          except Exception:
+              after, note = ("?", "?", "?"), "The queue could not be read after the run."
+          print("### Train\n")
+          print("| | before | after |\n|---|---|---|")
+          print(f"| Reason | {e('REASON')} | |")
+          print(f"| Pending reviews | {e('BEFORE_PENDING')} | {after[0]} |")
+          print(f"| Trained reviews | {e('BEFORE_TRAINED')} | {after[1]} |")
+          print(f"| Serving model version | {e('BEFORE_MODEL')} | {after[2]} |")
+          print(f"| Registered | {e('T_REGISTERED')} | |\n| New version | {e('T_VERSION')} | |\n| Promoted | {e('T_PROMOTED')} | |\n")
+          if note:
+              print(note + "\n")
+          if e("COOLDOWN_SKIP") == "true":
+              print("Skipped by the cooldown (the reason is above): no pod was started.")
+          elif e("BEFORE_SKIP") == "true":
+              print("Skipped because there are too few new reviews (300 are needed): no pod was started.")
+          elif e("T_REGISTERED") == "true" and e("T_PROMOTED") == "true":
+              print("A new version was registered and promoted: the server loads it within a minute.")
+          elif e("T_REGISTERED") == "true":
+              print("A new version was registered but the champion stays: it did not beat it on the same reviews.")
+          elif e("T_STARTED") == "true":
+              print("Nothing was registered: the gate failed or the trainer crashed, and the batch went back to pending.")
+          else:
+              print("No pod was started.")
+          PY

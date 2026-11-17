@@ -234,14 +234,25 @@ def test_recent_scores_are_aggregates_only():
     conn = FakeConn((200, 6.2345, 180, 0.7777, 1.2345, 190, 0.9473), [("food", 100), ("none", 80), ("malformed", 20)],
                     [("1", 120), ("2", 80)])
     out = serve.recent_scores(conn, 24)
-    assert out == {"hours": 24, "count": 200, "mean_score": 6.23, "labelled_score": 180, "mae": 0.7777, "mae_sd": 1.2345,
+    assert out == {"hours": 24, "version": None, "count": 200, "mean_score": 6.23, "labelled_score": 180, "mae": 0.7777, "mae_sd": 1.2345,
                    "labelled_recommended": 190, "recommended_accuracy": 0.9473,
                    "complaint_share": {"food": 0.5, "none": 0.4, "malformed": 0.1},
                    "model_versions": {"1": 120, "2": 80}}
     sql = " ".join(q.lower() for q, _ in conn.queries)
     for column in ["review", "title", "airline", "cabin", "prompt"]:
         assert column not in sql
-    assert conn.queries[0][1] == {"hours": 24, "max_error": 9}
+    assert conn.queries[0][1] == {"hours": 24, "max_error": 9, "version": None}
+    assert conn.queries[1][1]["version"] is None
+
+
+def test_recent_scores_of_one_version():
+    conn = FakeConn((57, 6.0, 50, 0.7, 1.0, 50, 0.95), [("food", 57)], [("1", 300), ("2", 57)])
+    out = serve.recent_scores(conn, 24, version="2")
+    assert out["version"] == "2" and out["count"] == 57 and out["model_versions"] == {"1": 300, "2": 57}
+    # the SUMMARY and COMPLAINTS queries get the version as a bound parameter, the VERSIONS query is not restricted
+    assert conn.queries[0][1]["version"] == "2" and conn.queries[1][1]["version"] == "2"
+    assert "%(version)s" in conn.queries[0][0] and "%(version)s" in conn.queries[1][0]
+    assert "%(version)s" not in conn.queries[2][0] and "version" not in conn.queries[2][1]
 
 
 def test_recent_scores_with_no_traffic():
@@ -257,13 +268,13 @@ def test_scores_recent_needs_the_database(monkeypatch):
 
 
 def test_scores_recent_reads_through_the_pool(monkeypatch):
-    conn = FakeConn((3, 7.0, 3, 1.0, 0.5, 3, 1.0), [("food", 3)], [("1", 3)])
+    conns = iter(FakeConn((3, 7.0, 3, 1.0, 0.5, 3, 1.0), [("food", 3)], [("1", 3)]) for _ in range(2))
 
     class Pool:
         def connection(self, timeout=None):
             class Ctx:
                 def __enter__(self_):
-                    return conn
+                    return next(conns)
 
                 def __exit__(self_, *exc):
                     return False
@@ -272,3 +283,4 @@ def test_scores_recent_reads_through_the_pool(monkeypatch):
     monkeypatch.setattr(serve, "db", Pool())
     monkeypatch.setattr(serve, "_table_ready", True)
     assert serve.scores_recent(hours=6)["count"] == 3
+    assert serve.scores_recent(hours=6, version="1")["version"] == "1"

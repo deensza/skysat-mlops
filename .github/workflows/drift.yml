@@ -1,26 +1,32 @@
 # Drift check on the server's traffic: reads GET /scores/recent (aggregates only: counts, MAE, accuracy, shares; never
-# review text) through the gateway and compares the live MAE and recommended accuracy with the gate in llm/gate.py
-# (MAE <= 1.0, recommended >= 0.90) over at least 100 labelled requests, and only when it misses by more than the
-# sampling noise (llm/drift_check.py). The labelled requests are the intake's live traffic: each passenger review,
-# sent to the model with its true labels.
-# On drift it opens a GitHub issue. It does NOT retrain on GitHub (no GPU): the trainer runs on a RunPod GPU
-# (`make train-remote`, or by itself when the server's intake has AUTO_TRAIN=1); the new adapter is promoted only
-# if it beats the champion, and the server loads it by itself within minutes.
-# The run's summary page shows the table (numbers, never rows).
+# review text) through the gateway and judges the serving model only. Drift means that over at least 100 labelled
+# requests in the last 24 hours its live MAE or recommended accuracy misses the gate in llm/gate.py (MAE <= 1.0,
+# recommended >= 0.90) by more than the sampling noise (llm/drift_check.py). The labelled requests are the intake's
+# live traffic: each passenger review, sent to the model with its true labels.
+# On drift it opens one GitHub issue (never a second while one is open). If the repository variable AUTO_RETRAIN is
+# `true` it also starts the Train workflow (train.yml), which rents a RunPod GPU. The cooldown (TRAIN_COOLDOWN_HOURS)
+# and the "at least 300 pending reviews" check in train.yml stop it from renting GPUs in a loop; the new adapter is
+# promoted only if it beats the champion. The run's summary page shows the table (numbers, never rows).
+# Runs every hour. If a secret is missing, a scheduled run only warns (no hourly red run); a run by hand fails.
 #
+# Switch it off: `gh workflow disable drift.yml`, or leave AUTO_RETRAIN unset or not `true` (the issue is still opened).
 # By hand: Actions -> Drift check -> Run workflow, or `gh workflow run drift.yml`.
-# Setup (repository owner, once): secrets SKYSAT_SERVER and SKYSAT_LOGIN (the gateway login for GitHub, docs/server.md).
+# Setup (repository owner, once; see docs/server.md):
+#   secrets    SKYSAT_SERVER, SKYSAT_LOGIN (the gateway login for GitHub), and for retraining RUNPOD_API_KEY or RUNPOD_API,
+#              SKYSAT_TRAINER_PASSWORD, MLFLOW_TRACKING_PASSWORD
+#   variables  AUTO_RETRAIN (`true` starts the training), MLFLOW_TRACKING_URI, MLFLOW_TRACKING_USERNAME,
+#              optional TRAIN_COOLDOWN_HOURS
 name: Drift check
 
 on:
-  # Enable for the final run: remove the `#` of the next two lines.
-  # schedule:
-  #   - cron: "35 * * * *"  # every hour at :35
+  schedule:
+    - cron: "35 * * * *"  # every hour at :35
   workflow_dispatch:
 
 permissions:
   contents: read
   issues: write  # to open the "Drift detected" issue with GITHUB_TOKEN
+  actions: read  # the called Train workflow reads its run history
 
 concurrency:
   group: drift
@@ -29,29 +35,47 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      drift: ${{ steps.drift.outputs.drift }}
+      version: ${{ steps.drift.outputs.version }}
     env:
       SKYSAT_SERVER: ${{ secrets.SKYSAT_SERVER }}
       SKYSAT_LOGIN: ${{ secrets.SKYSAT_LOGIN }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      EVENT: ${{ github.event_name }}
     steps:
       - name: Check the settings exist
+        id: settings
         run: |
+          missing=0
           for name in SKYSAT_SERVER SKYSAT_LOGIN; do
-            test -n "${!name}" || { echo "Missing secret $name: see docs/server.md (The automatic loop)"; exit 1; }
+            test -n "${!name}" || { echo "Missing secret $name: see docs/server.md (The automatic loop)"; missing=1; }
           done
+          if [ "$missing" = 1 ] && [ "$EVENT" = schedule ]; then
+            echo "::warning::Drift check not configured: a secret is missing (docs/server.md), nothing was checked"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          elif [ "$missing" = 1 ]; then
+            exit 1
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/checkout@v4
+        if: steps.settings.outputs.configured == 'true'
 
       - uses: actions/setup-python@v5
+        if: steps.settings.outputs.configured == 'true'
         with:
           python-version: "3.12"
           cache: pip
 
       - name: Install dependencies
+        if: steps.settings.outputs.configured == 'true'
         run: pip install -r requirements.txt
 
       - name: Drift check
         id: drift
+        if: steps.settings.outputs.configured == 'true'
         # Exit code 2 means the server could not be read: the job fails on purpose, an outage is not "no drift".
         run: |
           export API_USER="${SKYSAT_LOGIN%%:*}" API_PASSWORD="${SKYSAT_LOGIN#*:}"
@@ -59,14 +83,35 @@ jobs:
 
       - name: Open an issue on drift
         if: steps.drift.outputs.drift == 'true'
+        continue-on-error: true  # a failed `gh issue` must not stop the retraining, which needs this job to succeed
+        env:
+          VERSION: ${{ steps.drift.outputs.version }}
+          AUTO_RETRAIN: ${{ vars.AUTO_RETRAIN }}
         run: |
-          title="Drift detected: retrain the LoRA adapter (make train-remote)"
+          title="Drift detected: the serving model fell below the gate"
           if [ -n "$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[].number')" ]; then
             echo "An issue about this is already open"; exit 0
           fi
+          if [ "$AUTO_RETRAIN" = true ]; then
+            next="The Train workflow was called automatically (the retrain job of this workflow run); it trains unless the cooldown or the 300-review minimum stops it."
+          else
+            next="Automatic retraining is off (repository variable AUTO_RETRAIN): start the Train workflow by hand, or run \`make train-remote\` from a PC."
+          fi
           cat > body.md <<EOF
-          The live accuracy of the champion fell below the gate in llm/gate.py (MAE <= 1.0, recommended >= 0.90) over at least 100 labelled requests in the last 24 hours, and by more than the sampling noise. The table is on the summary page of [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID).
+          The live accuracy of the serving model (version ${VERSION:-unknown}) fell below the gate in llm/gate.py (MAE <= 1.0, recommended >= 0.90) over at least 100 labelled requests in the last 24 hours, and by more than the sampling noise. The table is on the summary page of [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID).
 
-          Retraining needs a GPU, so it does not run on GitHub. Run \`make train-remote\` (a RunPod pod takes the newest reviews from the queue, trains, and deletes itself). A new adapter is promoted only if it beats the champion.
+          $next A new adapter is promoted only if it beats the champion.
           EOF
           gh issue create --title "$title" --body-file body.md
+
+  retrain:
+    needs: check
+    if: needs.check.outputs.drift == 'true' && vars.AUTO_RETRAIN == 'true'
+    uses: ./.github/workflows/train.yml
+    # After drift the old labels are the problem: train on the new reviews only (no replay), three passes over them.
+    # Measured on 17 Nov 2026: with the default (500 replayed reviews, one pass) the retraining failed the gate, with
+    # these arguments it passed (docs/llm.md). A Train run started by hand keeps the trainer's defaults.
+    with:
+      reason: "drift (model version ${{ needs.check.outputs.version }})"
+      trainer_args: "--replay 0 --epochs 3"
+    secrets: inherit

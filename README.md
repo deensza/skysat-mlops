@@ -19,10 +19,18 @@ data intake → queue → LoRA training on a rented GPU → quality gate → exp
 packaging (Docker) → serving (FastAPI, Nginx) → monitoring (PostgreSQL, Grafana) → drift detection → retraining →
 CI/CD (GitHub Actions). Details: [docs/llm.md](docs/llm.md).
 
-| | v1 (from the queue, 16 Nov) | v1 under the "harsh" survey (13 Nov) | v2 retrained on harsh (13 Nov) |
+Measured on the server on 16 and 17 Nov 2026, live traffic scored by the model that was serving:
+
+| | 100 healthy reviews (version 1) | 300 "harsh" reviews (version 1) | 165 new "harsh" reviews after retraining (version 4) |
 |---|---|---|---|
-| Score MAE | 0.88 | 1.18 (fails the gate) | 0.41 |
-| Recommended accuracy | 92.0% | 89.5% | 95.5% |
+| Score MAE | 0.95 | 1.15 (drift check: DRIFT) | 0.55 (drift check: no drift) |
+| Recommended accuracy | 95.0% | 89.0% | 97.0% |
+
+The drift check fired on the harsh reviews. A first retraining that mixed 500 old reviews into the new ones failed the
+gate (MAE <= 1.0, recommended >= 90%) and was not registered. A second one, on the new reviews only, passed, beat the
+champion on the same held-back reviews, became version 4, and the server loaded it by itself. These trainings were
+started by hand on a Colab T4; the automatic path (a RunPod GPU started by GitHub) has not trained a model yet. Why
+the first one failed, and the earlier runs: [docs/llm.md](docs/llm.md#the-gate-and-what-it-measured).
 
 ## Data and licence
 
@@ -77,6 +85,13 @@ make llm-train                                # v2 from the newest reviews; prom
 `make llm-train` uses a local sqlite MLflow unless `SHARED=yes`. Docker: `make d-ps`, `d-logs`, `d-build`,
 `d-down` (data kept), `d-wipe` (deletes local data, asks first).
 
+## MLOps level
+
+By Google's three levels (manual, ML pipeline automation, CI/CD pipeline automation), SkySat is built to level 2: tests,
+image and deploy with rollback, and a drift alarm that starts the training workflow. The loop is built but not yet
+switched on (the repository owner adds the secrets and variables) and has not run on GitHub yet. What a real level 2
+system has that this one does not: [docs/architecture.md](docs/architecture.md#mlops-level).
+
 ## Pipeline
 
 | Stage | Where |
@@ -85,8 +100,8 @@ make llm-train                                # v2 from the newest reviews; prom
 | Train + gate + register | `llm/trainer.py` on a RunPod GPU (`llm/runpod_pod.py`) or this PC; MLflow experiment `skysat-llm`, model `skysat-reviews`, alias `champion` |
 | Serve | `api` service (`llm/serve.py`, CPU, 8 GB), behind Nginx: `/score`, `/model`, `/health`, `/docs` |
 | Monitor | `llm_scores` table → Grafana; `GET /scores/recent?hours=N` returns aggregates only |
-| Drift | `llm/drift_check.py`: DRIFT if live MAE > 1.0 or recommended accuracy < 0.90 by more than the sampling noise, on >= 100 labelled requests |
-| CI/CD | `ci.yml`: tests, compose check, image build, deploy (main only, if switched on) |
-| Retrain | `make train-remote`, or the intake by itself with `AUTO_TRAIN=1`. GitHub has no GPU |
+| Drift | `llm/drift_check.py`: DRIFT if the live MAE of the serving model > 1.0 or its recommended accuracy < 0.90 by more than the sampling noise, on >= 100 labelled requests |
+| CI/CD | `ci.yml`: tests (including `tests/test_pipeline.py`), `nginx -t`, compose check, image build, deploy on main only, if switched on, with a rollback to the running image if the smoke test fails |
+| Retrain | `train.yml`: started by `drift.yml` (only if `AUTO_RETRAIN` is `true`) or by hand; cooldown, needs >= 300 pending reviews, rents a RunPod GPU for at most 45 minutes, then checks no pod is left. Built, not yet switched on, not yet run on GitHub. Also `make train-remote` |
 
 See [docs/architecture.md](docs/architecture.md) for the picture and [docs/server.md](docs/server.md) for the always-on server.

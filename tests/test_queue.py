@@ -187,6 +187,126 @@ def test_runpod_missing_settings_names_the_api_key_too(monkeypatch):
     assert runpod_pod.missing_settings() == ["RUNPOD_API_KEY", "QUEUE_URL", "QUEUE_USER", "QUEUE_PASSWORD"]
 
 
+def test_runpod_outcome_is_read_from_the_pod_log():
+    log = ["c614cb7 Merge", "Result: registered=True version=3 promoted=True", "trainer exit code 0", "deleting pod x"]
+    assert runpod_pod.outcome(log) == {"exit_code": 0, "registered": True, "version": "3", "promoted": True}
+    failed = runpod_pod.outcome(["Result: registered=False version=None promoted=False", "trainer exit code 0"])
+    assert failed == {"exit_code": 0, "registered": False, "version": None, "promoted": False}
+    assert runpod_pod.outcome(["Traceback", "trainer exit code 1"])["exit_code"] == 1
+    assert runpod_pod.outcome(["still pulling the image"])["exit_code"] is None  # never seen: the launcher fails
+
+
+class FakeRunpod:
+    """Stands in for runpod_pod.request: a pod that is there for `alive` reads, then gone (404)."""
+
+    def __init__(self, alive, pods=()):
+        self.alive, self.calls, self.pods = alive, [], list(pods)
+
+    def __call__(self, method, path, body=None, timeout=60):
+        self.calls.append((method, path))
+        if (method, path) == ("GET", "/pods"):
+            return {"pods": self.pods}
+        if method == "GET":
+            self.alive -= 1
+            if self.alive < 0:
+                raise runpod_pod.urllib.error.HTTPError(path, 404, "gone", None, None)
+        return {}
+
+
+@pytest.fixture
+def no_waiting(monkeypatch):
+    monkeypatch.setattr(runpod_pod.time, "sleep", lambda s: None)
+    monkeypatch.setattr(runpod_pod, "_print_logs", lambda pod_id, seen, log: seen.add((1, "trainer exit code 0")))
+
+
+def test_runpod_follow_does_not_delete_a_pod_that_deleted_itself(monkeypatch, no_waiting):
+    fake = FakeRunpod(alive=2)
+    monkeypatch.setattr(runpod_pod, "request", fake)
+    assert runpod_pod.follow("p1", 90, log=lambda s: None)["exit_code"] == 0
+    assert ("DELETE", "/pods/p1") not in fake.calls
+
+
+def test_runpod_follow_deletes_the_pod_at_the_deadline(monkeypatch, no_waiting):
+    fake = FakeRunpod(alive=10**6)
+    monkeypatch.setattr(runpod_pod, "request", fake)
+    runpod_pod.follow("p1", 0, log=lambda s: None)  # 0 minutes: the deadline has passed at the first look
+    assert fake.calls[-1] == ("DELETE", "/pods/p1")
+
+
+def test_runpod_follow_deletes_the_pod_when_it_is_interrupted(monkeypatch, no_waiting):
+    fake = FakeRunpod(alive=10**6)
+    monkeypatch.setattr(runpod_pod, "request", fake)
+    monkeypatch.setattr(runpod_pod, "_print_logs", lambda *a: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):  # Ctrl-C, or a cancelled workflow
+        runpod_pod.follow("p1", 90, log=lambda s: None)
+    assert fake.calls[-1] == ("DELETE", "/pods/p1")
+
+
+def test_runpod_follow_survives_a_network_blip(monkeypatch, no_waiting):
+    gone = runpod_pod.urllib.error.HTTPError("x", 404, "gone", None, None)
+    answers = iter([OSError("network is unreachable"), {}, gone])
+
+    def flaky(method, path, body=None, timeout=60):
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(runpod_pod, "request", flaky)
+    assert runpod_pod.follow("p1", 90, log=lambda s: None)["exit_code"] == 0
+
+
+def test_runpod_follow_deletes_a_pod_that_stopped_but_is_still_listed(monkeypatch, no_waiting):
+    calls = []
+
+    def stopped(method, path, body=None, timeout=60):
+        calls.append((method, path))
+        return {"status": "EXITED"}
+
+    monkeypatch.setattr(runpod_pod, "request", stopped)
+    runpod_pod.follow("p1", 90, log=lambda s: None)
+    assert calls == [("GET", "/pods/p1"), ("DELETE", "/pods/p1")]  # no waiting for the deadline
+
+
+def test_runpod_launch_stops_at_once_when_the_key_is_refused(monkeypatch):
+    for k in ("QUEUE_URL", "QUEUE_USER", "QUEUE_PASSWORD"):
+        monkeypatch.setenv(k, "x")
+    tried = []
+
+    def refused(method, path, body=None, timeout=60):
+        tried.append(body["gpu"]["id"])
+        raise runpod_pod.urllib.error.HTTPError(path, 401, "Unauthorized", None, __import__("io").BytesIO(b"bad key"))
+
+    monkeypatch.setattr(runpod_pod, "request", refused)
+    with pytest.raises(RuntimeError, match="refused the API key"):
+        runpod_pod.launch(log=lambda s: None)
+    assert len(tried) == 1  # not once per GPU type
+
+
+def test_runpod_launch_sweeps_when_the_answer_to_create_is_lost(monkeypatch, no_waiting):
+    for k in ("QUEUE_URL", "QUEUE_USER", "QUEUE_PASSWORD"):
+        monkeypatch.setenv(k, "x")
+    calls = []
+
+    def lost(method, path, body=None, timeout=60):
+        calls.append((method, path))
+        if method == "POST":
+            raise TimeoutError("timed out")  # RunPod may have made the pod all the same
+        return {"pods": [{"id": "a", "name": "skysat-trainer"}]} if path == "/pods" else {}
+
+    monkeypatch.setattr(runpod_pod, "request", lost)
+    with pytest.raises(RuntimeError, match="Could not reach RunPod"):
+        runpod_pod.launch(log=lambda s: None)
+    assert calls == [("POST", "/pods"), ("GET", "/pods"), ("DELETE", "/pods/a")]
+
+
+def test_runpod_sweep_deletes_only_trainer_pods(monkeypatch, no_waiting):
+    fake = FakeRunpod(alive=0, pods=[{"id": "a", "name": "skysat-trainer"}, {"id": "b", "name": "someone-elses-pod"}])
+    monkeypatch.setattr(runpod_pod, "request", fake)
+    assert runpod_pod.sweep(log=lambda s: None) == 1
+    assert ("DELETE", "/pods/a") in fake.calls and ("DELETE", "/pods/b") not in fake.calls
+
+
 # --- The queue's SQL, on a real PostgreSQL -------------------------------------------------------------------
 
 @pytest.fixture
