@@ -300,6 +300,25 @@ def test_runpod_launch_sweeps_when_the_answer_to_create_is_lost(monkeypatch, no_
     assert calls == [("POST", "/pods"), ("GET", "/pods"), ("DELETE", "/pods/a")]
 
 
+@pytest.mark.parametrize("before, after, expected", [
+    # registered and promoted: the batch is trained and the server serves a new version
+    ({"trained": 100, "model": "4"}, {"trained": 400, "model": "5"},
+     {"exit_code": 0, "registered": True, "version": "5", "promoted": True}),
+    # registered, the champion stays
+    ({"trained": 100, "model": "4"}, {"trained": 400, "model": "4"},
+     {"exit_code": 0, "registered": True, "version": None, "promoted": False}),
+    # nothing registered: a failed gate and a crash look the same, so the exit code stays unknown (the run fails)
+    ({"trained": 100, "model": "4"}, {"trained": 100, "model": "4"},
+     {"exit_code": None, "registered": False, "version": None, "promoted": False}),
+    # the server could not be read: nothing is claimed
+    (None, {"trained": 400, "model": "5"}, {"exit_code": None, "registered": None, "version": None, "promoted": None}),
+    ({"trained": 100, "model": "4"}, None, {"exit_code": None, "registered": None, "version": None, "promoted": None}),
+])
+def test_runpod_outcome_without_the_pod_log_comes_from_the_server(monkeypatch, no_waiting, before, after, expected):
+    monkeypatch.setattr(runpod_pod, "server_state", lambda: after)
+    assert runpod_pod.outcome_from_server(before, log=lambda s: None) == expected
+
+
 def test_runpod_sweep_deletes_only_trainer_pods(monkeypatch, no_waiting):
     fake = FakeRunpod(alive=0, pods=[{"id": "a", "name": "skysat-trainer"}, {"id": "b", "name": "someone-elses-pod"}])
     monkeypatch.setattr(runpod_pod, "request", fake)

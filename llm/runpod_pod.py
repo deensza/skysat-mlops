@@ -4,9 +4,10 @@
     python -m llm.runpod_pod --dry-run                       # print the request, start nothing
     python -m llm.runpod_pod --sweep                         # delete trainer pods left behind (exit 1 if any)
 
-With --wait the exit code is the trainer's (1 if the log never showed it), and with $GITHUB_OUTPUT set it writes
-pod_id (as soon as a pod exists), exit_code, registered, version and promoted for the workflow
-(.github/workflows/train.yml).
+With --wait the exit code is the trainer's, read from the pod's log. If the log cannot be read (RunPod answers 403 to
+an API key that may create pods but not read logs), the outcome is taken from the server instead: 0 if the batch was
+marked trained (a version was registered), else 1. With $GITHUB_OUTPUT set it writes pod_id (as soon as a pod exists),
+exit_code, registered, version and promoted for the workflow (.github/workflows/train.yml).
 
 The pod clones this repo's --branch from GitHub (the code must be pushed), installs transformers/peft/mlflow on the
 image's own PyTorch, downloads the base model, runs the trainer against QUEUE_URL and deletes itself when the trainer
@@ -23,6 +24,7 @@ RunPod gives every pod RUNPOD_POD_ID and a key scoped to that pod, which the pod
 """
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -179,6 +181,47 @@ def follow(pod_id: str, max_minutes: int, log=print) -> dict:
     return outcome(line for _, line in seen)
 
 
+def server_state() -> dict | None:
+    """What the server says right now: reviews marked trained and the serving model's version. None if it cannot
+    be read (no QUEUE_URL here, or the server does not answer)."""
+    base, state = os.environ.get("QUEUE_URL", "").rstrip("/"), {}
+    login = base64.b64encode(f"{os.environ.get('QUEUE_USER')}:{os.environ.get('QUEUE_PASSWORD')}".encode()).decode()
+    for key, path, field in (("trained", "/queue/stats", "trained"), ("model", "/model", "version")):
+        try:
+            req = urllib.request.Request(f"{base}{path}", headers={"Authorization": f"Basic {login}"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                state[key] = json.load(resp).get(field)
+        except urllib.error.HTTPError as err:
+            if key == "trained" or err.code != 503:  # 503 on /model: no model loaded yet
+                return None
+            state[key] = None
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            return None
+    return state
+
+
+def outcome_from_server(before: dict | None, log=print) -> dict:
+    """When the pod's log could not be read (the API key may not be allowed to): what the server says happened.
+    A batch is marked trained only if a version was registered, and the API loads a new champion within a minute.
+    Without a registration the exit code stays unknown: a failed gate, too few reviews and a crash look the same."""
+    out = {"exit_code": None, "registered": None, "version": None, "promoted": None}
+    after = server_state()
+    if not before or not after or before["trained"] is None or after["trained"] is None:
+        log("The pod's log could not be read and neither could the server: the outcome is unknown")
+        return out
+    out["registered"] = after["trained"] > before["trained"]
+    if out["registered"] and after["model"] == before["model"]:
+        time.sleep(75)  # the API looks for a new champion every 60 s
+        after = server_state() or after
+    out["promoted"] = out["registered"] and after["model"] != before["model"]
+    if out["registered"]:
+        out |= {"exit_code": 0, "version": after["model"] if out["promoted"] else None}
+    log(f"The pod's log could not be read. From the server: reviews marked trained {before['trained']} -> "
+        f"{after['trained']}, serving model {before['model']} -> {after['model']}"
+        + ("" if out["registered"] else ": nothing was registered (a failed gate, too few reviews, or a crash)"))
+    return out
+
+
 def sweep(log=print) -> int:
     """Deletes every pod named like a trainer pod that is still there. Returns how many it found: after a training
     run the answer must be 0, so a workflow can fail loudly on anything else."""
@@ -257,6 +300,7 @@ def main() -> int:
         body["env"] = {k: ("***" if "PASSWORD" in k else v) for k, v in body["env"].items()}
         print(json.dumps(body, indent=2))
         return 0
+    before = server_state() if args.wait else None
     pod = launch(args.gpu, args.branch, args.trainer_args, args.max_minutes)
     if os.environ.get("GITHUB_OUTPUT"):  # at once: the workflow's cooldown counts runs that rented a pod
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
@@ -266,6 +310,8 @@ def main() -> int:
               f"{API}/pods/{pod['id']}")
         return 0
     result = follow(pod["id"], args.max_minutes + 5)
+    if result["exit_code"] is None:
+        result = outcome_from_server(before)
     print(f"Outcome: {result}")
     if os.environ.get("GITHUB_OUTPUT"):  # for .github/workflows/train.yml
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
