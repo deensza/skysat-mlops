@@ -164,7 +164,7 @@ jobs:
       - name: Train on a rented GPU
         id: train
         if: steps.cooldown.outputs.skip != 'true' && steps.before.outputs.skip != 'true'
-        run: python3 -m llm.runpod_pod --wait --branch main --max-minutes 45 --trainer-args "$TRAINER_ARGS"
+        run: python3 -u -m llm.runpod_pod --wait --branch main --max-minutes 45 --trainer-args "$TRAINER_ARGS"
 
       # The cooldown of later runs looks for this step: it runs only if a pod was really created.
       - name: A GPU was rented
