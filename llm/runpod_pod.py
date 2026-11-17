@@ -191,29 +191,50 @@ def sweep(log=print) -> int:
     return len(pods)
 
 
+_told: set = set()
+
+
+def _once(log, text: str) -> None:
+    """Says a thing about the log stream once, however often it happens."""
+    if text not in _told:
+        _told.add(text)
+        log(text)
+
+
 def _print_logs(pod_id: str, seen: set, log) -> None:
-    """The log is a Server-Sent Events stream: read for a few seconds, print lines not printed yet."""
+    """The log is a Server-Sent Events stream: read for a few seconds, print lines not printed yet. A problem with
+    the stream is said once and never ends the wait: without the log the run counts as failed, so it must be visible."""
     key = os.environ["RUNPOD_API_KEY"]
     req = urllib.request.Request(f"{API}/pods/{pod_id}/logs?source=container&tail=1000",
                                  headers={"Authorization": f"Bearer {key}", "Accept": "text/event-stream"})
-    started = time.time()
+    started, got = time.time(), 0
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             for raw in resp:
                 line = raw.decode(errors="replace").strip()
+                got += bool(line)
                 if line.startswith("data:"):
                     try:
                         event = json.loads(line[5:])
                     except ValueError:
+                        _once(log, f"Pod log: a line that is not JSON: {line[:200]}")
+                        continue
+                    if not isinstance(event, dict) or "line" not in event:
+                        _once(log, f"Pod log: an event without a line: {line[:200]}")
                         continue
                     mark = (event.get("ts"), event.get("line"))
                     if mark not in seen:
                         seen.add(mark)
                         log(f"  pod | {event.get('line', '')}")
+                elif line and not line.startswith((":", "event:", "id:", "retry:")):
+                    _once(log, f"Pod log: an unexpected line: {line[:200]}")
                 if time.time() - started > 8:
                     break
-    except (urllib.error.URLError, TimeoutError, OSError):
-        pass  # no log yet (the image is still being pulled), or the stream timed out: try again
+    except urllib.error.HTTPError as err:
+        _once(log, f"Pod log: HTTP {err.code} {err.read().decode(errors='replace')[:200]}")
+    except (urllib.error.URLError, TimeoutError, OSError) as err:
+        if not got:  # nothing at all: no log yet (the image is still being pulled), or the stream does not answer
+            _once(log, f"Pod log: nothing received ({type(err).__name__}: {err})")
 
 
 def main() -> int:
