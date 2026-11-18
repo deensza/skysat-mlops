@@ -228,3 +228,5 @@ off. Not seen yet: a scheduled check that reaches the server.
 - The deploy job ran once (13 Nov 2026, run 43416289152) and is off since (no runner on the server); its rollback has
   never run and restores only the image, not the compose or gateway files.
 - There is one server and no staging environment.
+
+This line was added by the demo pull request "DEMO LVL2: green" to show CI testing and building a harmless change. It is never merged.
