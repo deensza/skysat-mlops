@@ -338,8 +338,8 @@ def score(req: ScoreRequest):
 ASK_EXAMPLES = {
     "happy": {"summary": "A happy passenger", "value": "Everything went smoothly from check-in to landing. The crew "
               "were warm, the meal was hot and tasty, and we arrived early. I will fly with them again."},
-    "food": {"summary": "Bad food", "value": "The lasagne was still frozen in the middle and the bread was stale. The "
-             "seat was fine, but for a nine hour flight the food was not acceptable."},
+    "food": {"summary": "Bad food", "value": "Dinner was a cold, soggy sandwich and breakfast never came. The crew "
+             "were kind and we left on time, but the food was terrible."},
     "crew": {"summary": "Rude cabin crew", "value": "The cabin crew ignored the call button for an hour and one of "
              "them rolled her eyes when I asked for water. I have never been treated so rudely on a flight."},
 }

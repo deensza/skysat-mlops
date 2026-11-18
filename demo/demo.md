@@ -113,7 +113,22 @@ ask "My knees touched the seat in front for seven hours and the seat would not r
 **Say about the third:** "That one is wrong: the complaint is the seat. The model gets the complaint right about three
 times in four, and the gate measures exactly that before a version may serve."
 
-The same in the browser: `/docs` → `POST /score` → "Try it out". Let someone in the room dictate a review.
+**In the browser, with someone's own review:** the `/docs` tab → `POST /ask` → "Try it out". There is one text box,
+already filled with a ready-made review (a list above it offers three). Delete it, type what someone in the room
+dictates, press "Execute". No JSON, and the answer is not logged, so trying things out changes neither the dashboard
+nor the drift check. The same from the terminal:
+
+```bash
+curl -s -u "$U" -X POST "$S/ask" -H 'Content-Type: text/plain' -d "The screen at my seat was broken and so was the one next to it. No films and no music for ten hours."; echo
+```
+
+```
+{"review":"The screen at my seat was broken and so was the one next to it. No films and no music for ten hours.","score":1,"recommended":"no","complaint":"entertainment","model_version":"7","latency_ms":6261}
+```
+
+The model reads the airline, cabin and title too, and `/ask` sends none of them, so the same review can get another
+complaint than through `ask`: the frozen-lasagne review above is "food" with an airline name and "value" through
+`/ask` (18 Nov, version 7).
 
 What the script's nine reviews gave on 18 Nov (version 7):
 
