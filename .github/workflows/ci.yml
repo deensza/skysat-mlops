@@ -141,3 +141,12 @@ jobs:
           else
             echo "ROLLBACK FAILED: the server needs a person"
           fi
+
+      # After the rollback step on purpose: a failure here is not the image's fault, so nothing is rolled back, but
+      # the job ends failed. Needs the secrets of the drift check (SKYSAT_SERVER, SKYSAT_LOGIN). Never run on GitHub
+      # yet, like the rollback; the script itself was run against the server on 18 Nov 2026.
+      - name: Check the public way in (login, queue rule, Grafana reads the log)
+        env:
+          SKYSAT_SERVER: ${{ secrets.SKYSAT_SERVER }}
+          SMOKE_LOGIN: ${{ secrets.SKYSAT_LOGIN }}
+        run: bash .github/scripts/gateway-test.sh "https://$SKYSAT_SERVER"
