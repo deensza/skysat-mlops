@@ -7,6 +7,9 @@ Team: Bermal Deniz Akkaya, Osman Şahin Güler
 
 Demo videos: [the server and its retraining loop](https://drive.google.com/file/d/1Ulbq2-DxDoxo9LLP3ISe-qSe07x_d64b/view) (2:18) · [the Kaggle competition, the project's first model](https://drive.google.com/file/d/1dPYeIG6mb0o7lfYjoIIgoqsWV4Z0CbQd/view) (1:46) · [folder](https://drive.google.com/drive/folders/1kfRWCZTZPatf758JnG09AcfO2DWUIb80)
 
+Live demo: [demo/demo.sh](demo/demo.sh) shows the running system in eight steps, about 3 minutes with `--timed`;
+[demo/demo.md](demo/demo.md) is the same demo as commands to type.
+
 SkySat is a **complaint box** for airline reviews. A small LLM (Qwen2.5-1.5B-Instruct, LoRA-tuned) reads a real
 review and answers with the score out of 10, whether the reviewer would recommend the airline, and the main complaint.
 Passengers' reviews reach the server, wait in a queue, and a rented GPU retrains the model from it:
@@ -39,7 +42,7 @@ by hand. It trained on a batch of 300 reviews from the server's queue and regist
 93.0% on 100 held-back reviews). Version 5 did not beat version 4 on those reviews (combined 0.858 against 0.861), so
 version 4 stayed the champion.
 
-The same day the automatic chain ran end to end once. The drift check found drift on version 4 (MAE 1.23, recommended
+The same day the automatic chain ran end to end for the first time. The drift check found drift on version 4 (MAE 1.23, recommended
 81.2% on 591 requests) and called the Train workflow; a pod on an RTX 3080 Ti ($0.18/h) existed for 5 min 32 s (about
 2 cents); version 6 was registered and promoted, and the server loaded it. Three calls before that, between 13:12 and
 14:24 UTC, rented nothing: no GPU type in the list was free. Every drift check that day was started by hand, because
@@ -71,7 +74,7 @@ Why the first retraining failed, and every run: [docs/llm.md](docs/llm.md#the-ga
 | `loadtest/` | k6 test for `POST /score` |
 | `tests/` | Automated tests (pytest, no GPU; the queue's SQL against a real PostgreSQL in CI) |
 | `docs/` | [LLM](docs/llm.md), [architecture](docs/architecture.md), [server](docs/server.md), [presentation](docs/presentation.md) |
-| `demo/` | [Demo runbook](demo/README.md) |
+| `demo/` | [The live demo as a script](demo/demo.sh), [the same by hand](demo/demo.md), [the recorded demo's runbook](demo/README.md) |
 | `.github/workflows/` | CI/CD (`ci.yml`), drift check (`drift.yml`), training on a rented GPU (`train.yml`) |
 
 ## Setup
@@ -111,14 +114,27 @@ retraining of 16 Nov failed the gate. On RunPod the same trainer is started by t
 ## MLOps level
 
 By Google's three levels (manual, ML pipeline automation, CI/CD pipeline automation), SkySat is built to level 2: tests,
-image and deploy with rollback, and a drift alarm that starts the training workflow. The loop has been switched on
-since 17 Nov 2026 (secrets and variables set, `AUTO_RETRAIN=true`).
-That day the chain ran end to end once: a drift alarm called the Train workflow, which rented a GPU, trained, and
-promoted version 6. Each drift check of that day was started by hand: GitHub's hourly schedule had not started one by 17:35 UTC.
-Two scheduled runs came later (21:53 UTC on 17 Nov, 03:49 UTC on 18 Nov); both failed because the server was off.
+image and deploy with rollback, and a drift alarm that starts the training workflow. The loop's secrets and variables
+are set since 17 Nov 2026, and the repository variable `AUTO_RETRAIN` switches it: only `true` lets a drift alarm rent
+a GPU. The chain has run end to end, first on 17 Nov 2026: a drift alarm called the Train workflow, which rented a
+GPU, trained, and promoted a new version that the server then loaded. Each of those drift checks was started by hand:
+GitHub's hourly schedule fires only now and then, and its first two runs (21:53 UTC on 17 Nov, 03:49 UTC on 18 Nov)
+met a switched-off server.
 The deploy job is still off (no self-hosted runner, `DEPLOY_TO_RUNNER` unset): the server is updated by hand with
 `az vm run-command`. What a real level 2 system has that this one does not:
 [docs/architecture.md](docs/architecture.md#mlops-level).
+
+### Where the current state is
+
+What changes with every run is not repeated on this page:
+
+| What | Where to read it |
+|---|---|
+| Which version serves | `GET /model` on the server |
+| Every version and its gate numbers | the registry: [MLflow on DagsHub](https://dagshub.com/HawkOsm/skysat-mlops.mlflow), model `skysat-reviews`, alias `champion` |
+| Every drift check and training run | [GitHub Actions](https://github.com/deensza/skysat-mlops/actions): workflows Drift check and Train; each run's summary page has the numbers |
+| Whether a drift alarm may rent a GPU | the repository variable `AUTO_RETRAIN` |
+| Drift alarms | issues titled "Drift detected"; the training run that promotes a new version closes its alarm |
 
 ## Pipeline
 
@@ -130,6 +146,6 @@ The deploy job is still off (no self-hosted runner, `DEPLOY_TO_RUNNER` unset): t
 | Monitor | `llm_scores` table → Grafana; `GET /scores/recent?hours=N` returns aggregates only |
 | Drift | `llm/drift_check.py`: DRIFT if the live MAE of the serving model > 1.0 or its recommended accuracy < 0.90 by more than the sampling noise, on >= 100 labelled requests |
 | CI/CD | `ci.yml`: tests (including `tests/test_pipeline.py`), `nginx -t`, compose check, image build; on pushes to main the image goes to ghcr.io. The deploy job (rollback to the running image if the smoke test fails) is written but off: no self-hosted runner, `DEPLOY_TO_RUNNER` unset. It ran once, on 13 Nov 2026 (run 43416289152), and has been off since; the version with the rollback has never run. The server is updated by hand |
-| Retrain | `train.yml`: started by `drift.yml` (only if `AUTO_RETRAIN` is `true`) or by hand; cooldown, needs >= 300 `ready` reviews (pending and already scored by the model as live traffic), rents a RunPod GPU for at most 45 minutes, then checks no pod is left. Switched on since 17 Nov 2026; that day it trained on RunPod by hand and once started by the drift check ([docs/llm.md](docs/llm.md#what-ran-on-runpod-17-nov-2026)). Also `make train-remote` |
+| Retrain | `train.yml`: started by `drift.yml` (only if `AUTO_RETRAIN` is `true`) or by hand; cooldown, needs >= 300 `ready` reviews (pending and already scored by the model as live traffic), rents a RunPod GPU for at most 45 minutes, then checks no pod is left; a run that promotes a new version closes the drift issue. It has trained on RunPod started by hand and started by the drift check ([docs/llm.md](docs/llm.md#what-ran-on-runpod-17-nov-2026)). Also `make train-remote` |
 
 See [docs/architecture.md](docs/architecture.md) for the picture and [docs/server.md](docs/server.md) for the always-on server.

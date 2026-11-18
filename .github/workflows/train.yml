@@ -7,6 +7,8 @@
 # (reason other than "by hand") waits for the cooldown (TRAIN_COOLDOWN_HOURS, default 6) after the last run that
 # rented a GPU. A run that found no free GPU rented nothing and does not count.
 # Never two runs at once. A last step deletes any trainer pod that is still there; if it finds one, the run fails.
+# If the run promoted a new champion, it closes the open "Drift detected" issue (the drift check opened it): the
+# alarm is answered by the run that fixed it. Any other outcome leaves the issue open.
 # The run ends green only if a version was registered. RunPod answers 403 to this project's API key on the pod-log
 # endpoint, so the launcher reads the outcome from the server (reviews marked trained, serving version); a failed
 # gate, too few reviews and a crash then all end as a failed run. If no GPU type in the list is free, the run fails
@@ -54,6 +56,7 @@ on:
 permissions:
   contents: read
   actions: read  # gh run list (the cooldown)
+  issues: write  # to close the "Drift detected" issue after a promotion
 
 concurrency:
   group: train
@@ -184,6 +187,14 @@ jobs:
       - name: No pod may be left behind
         if: always() && steps.settings.outcome == 'success'
         run: python3 -m llm.runpod_pod --sweep
+
+      # Only a promotion answers the alarm: the model that drifted no longer serves.
+      - name: Close the drift issue
+        if: steps.train.outputs.promoted == 'true'
+        continue-on-error: true  # a failed `gh issue` must not turn a good training red
+        env:
+          VERSION: ${{ steps.train.outputs.version }}
+        run: bash .github/scripts/close-drift-issue.sh "$VERSION" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
       - name: Summary
         if: always()

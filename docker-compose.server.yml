@@ -20,6 +20,10 @@ services:
     restart: unless-stopped
     environment:
       MODEL_RELOAD_SECONDS: 60  # a promotion (make llm-promote) reaches the server within a minute, e.g. live in the demo
+      # float32 on the 4-vCPU, 16 GB server: about 7 s a review, against 34-60 s with bfloat16 (measured 17 and 18 Nov
+      # 2026). It needs about 9.3 GB: on a server with less memory set LLM_DTYPE=bfloat16 in the server's .env.
+      LLM_DTYPE: ${LLM_DTYPE:-float32}
+    mem_limit: 11g
     depends_on: !override
       postgres:
         condition: service_healthy

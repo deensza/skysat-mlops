@@ -6,11 +6,11 @@ top. Training happens on a rented RunPod GPU or a local NVIDIA card; the adapter
 
 | | |
 |---|---|
-| Machine | Ubuntu 24.04 VM, Azure `Standard_B2as_v2` (2 vCPU, 8 GB RAM; resized on 2026-11-16). The LLM needs **at least 8 GB** (the `api` container has `mem_limit: 8g`; the 1.5B-parameter model alone needs ~4 GB in bfloat16). The first version ran on a `Standard_B2ats_v2` (1 GB RAM), which cannot host it |
+| Machine | Ubuntu 24.04 VM, Azure `Standard_B4as_v2` (4 vCPU, 16 GB RAM; resized on 2026-11-17 from `Standard_B2as_v2`, 2 vCPU and 8 GB). On this size the API runs in float32 (`LLM_DTYPE` and `mem_limit: 11g` in [docker-compose.server.yml](../docker-compose.server.yml)): about 7 s a review and about 9.3 GB of memory. A server with 8 GB must set `LLM_DTYPE=bfloat16` in its `.env` (the model then needs ~4 GB and a review takes 34-60 s); less than 8 GB cannot host it. The first version ran on a `Standard_B2ats_v2` (1 GB RAM), which cannot host it |
 | Runs | Caddy (HTTPS), Nginx (the gateway), 1 `api` container (the LLM, CPU), the `intake` (`POST /reviews` and the queue), PostgreSQL, Grafana |
 | Does not run | local MLflow (the API loads the champion from DagsHub), the k6 load test, any training (worker 2 runs on a RunPod pod) |
 | Holds | the review queue (`queue.reviews`, review text readable only by the `skysat` database user) and the prediction log (numbers only). The base model (~3 GB) is downloaded into a Docker volume at the first start |
-| Addresses | `https://<server>/docs` (API, `POST /score`), `https://<server>/grafana/d/skysat` (dashboard). The name is not in this public repo on purpose |
+| Addresses | `https://<server>/docs` (API: `POST /score`, and `POST /ask` to try the model with one text box), `https://<server>/grafana/d/skysat` (dashboard). The name is not in this public repo on purpose |
 
 ## The gateway: the only way in
 
@@ -58,7 +58,8 @@ simulator (a PC) -> POST /reviews -> queue.reviews -> drift.yml -> train.yml -> 
   `GET /scores/recent?version=N` (aggregates only) and judges only the serving model. On DRIFT it opens one issue
   ("Drift detected: the serving model fell below the gate") and, only if the repository variable `AUTO_RETRAIN` is
   `true`, calls the Train workflow with `--replay 0 --epochs 3` (the new reviews only: after drift the old labels are
-  the problem). A scheduled run with missing secrets is skipped with a warning.
+  the problem). A scheduled run with missing secrets is skipped with a warning. The issue is closed by the Train
+  run that promotes a new version.
 - **Training** is [train.yml](../.github/workflows/train.yml) ("Train"), started by the drift check or by hand
   (`gh workflow run train.yml`). It checks its settings, respects a cooldown (`TRAIN_COOLDOWN_HOURS`, default 6: no
   automatic run if a GPU was rented less than that long ago; a run that found no free GPU rented nothing and does not
@@ -75,7 +76,8 @@ simulator (a PC) -> POST /reviews -> queue.reviews -> drift.yml -> train.yml -> 
 
 ### What has run (17 Nov 2026)
 
-The loop was switched on on 17 Nov 2026: the secrets and variables below are set and `AUTO_RETRAIN` is `true`.
+The loop was switched on on 17 Nov 2026: the secrets and variables below are set. `AUTO_RETRAIN` is the switch: `true`
+when a drift alarm may rent a GPU, anything else to pause it (for example while testing on the server).
 
 - **The drift check, by hand.** 08:06 UTC: version 4, 267 requests, "no drift" (MAE 0.820 ± 0.080, recommended
   0.899 ± 0.018). 13:12 UTC, after 492 more reviews with a strong label shift were posted: version 4, 511 requests,
@@ -101,7 +103,10 @@ The loop was switched on on 17 Nov 2026: the secrets and variables below are set
   read version 1 only: 71 requests, MAE 1.845 ± 0.255, recommended 0.775 ± 0.050, each "not enough labelled requests
   (71 < 100)", so "no drift" and no training. In its 24 hour window: version 1, 71 requests; version 4, 594;
   version 6, 58.
-- **Not done by the workflow:** closing the issue. Issue 18 was closed by hand at 17:12 UTC.
+- **Not done by the workflow then:** closing the issue. Issue 18 was closed by hand at 17:12 UTC. Since 18 Nov 2026
+  a Train run that promotes a new version closes the open drift issue itself
+  ([close-drift-issue.sh](../.github/scripts/close-drift-issue.sh)); a run that registers nothing, or a version
+  that does not beat the champion, leaves it open.
 - **The hourly schedule.** `drift.yml` reached `main` at 06:17 UTC with the schedule `35 * * * *`. GitHub started no
   scheduled run in the seven hourly slots from 06:35 to 12:35 UTC, although the workflow was listed as active. At
   13:08 UTC the workflow was disabled and enabled again.
@@ -125,7 +130,7 @@ The loop was switched on on 17 Nov 2026: the secrets and variables below are set
    the queue). For reference:
 
    ```bash
-   az vm run-command invoke -g skysat-server -n skysat-server --command-id RunShellScript --scripts 'cd /opt/skysat && git pull -q && docker compose pull api intake && docker compose up -d --no-build' --query "value[0].message" -o tsv
+   az vm run-command invoke -g skysat-server -n skysat-server --command-id RunShellScript --scripts 'cd /opt/skysat && git fetch -q origin main && git checkout -q origin/main && docker compose pull api intake && docker compose up -d --no-build && docker compose restart nginx' --query "value[0].message" -o tsv
    ```
 
 2. Two gateway logins for robots, `github` (the drift check) and `trainer` (the RunPod pod): **done on 2026-11-16**.
@@ -194,7 +199,8 @@ resume. The server runs a copy of the script, so after a change to `monitoring/w
   was not read): each of the three hand-started runs held an RTX 3070 ($0.13/h) for about 5 minutes, about one cent;
   the run started by the drift check held an RTX 3080 Ti ($0.18/h) for 5 min 32 s, about 2 cents. A run that finds no
   free GPU costs nothing.
-- The VM: `Standard_B2as_v2` in austriaeast is $0.0864 per hour on Azure's price list, about $2 a day, from the Azure
+- The VM: `Standard_B4as_v2` in austriaeast is $0.173 per hour on Azure's price list, about $4.15 a day (the 8 GB
+  `Standard_B2as_v2` is $0.0864 per hour, about $2 a day), from the Azure
   for Students credit. No card is charged: when the credit ends, Azure disables the subscription. Check Cost
   Management. Deallocate the VM when it is not needed:
 
@@ -208,7 +214,7 @@ az group delete -n skysat-server                      # remove everything, inclu
 
 ```bash
 az group create -n skysat-server -l austriaeast
-az vm create -g skysat-server -n skysat-server --image Ubuntu2404 --size <a size with >= 8 GB RAM, now Standard_B2as_v2; the first version used Standard_B2ats_v2, 1 GB> \
+az vm create -g skysat-server -n skysat-server --image Ubuntu2404 --size <now Standard_B4as_v2, 16 GB; Standard_B2as_v2, 8 GB, works with LLM_DTYPE=bfloat16; the first version used Standard_B2ats_v2, 1 GB> \
   --admin-username skysat --ssh-key-values ~/.ssh/skysat-server.pub --public-ip-sku Standard \
   --storage-sku StandardSSD_LRS --os-disk-size-gb 32 --nsg-rule SSH
 az network public-ip update -g skysat-server -n skysat-serverPublicIP --dns-name <name>
@@ -297,6 +303,11 @@ On 2026-11-16, on the `Standard_B2as_v2` VM with champion version 1:
 | then 300 harsh reviews (2019-02) | MAE 1.150 ± 0.061, recommended accuracy 89.0% on those 300, drift check "DRIFT" (on MAE) |
 | all 400 together | MAE 1.100 ± 0.050, accuracy 90.5%, "DRIFT" |
 
-The ± is one standard error. Not yet measured on the server: the restart time (until `/score` answers, including loading
-the base model from the volume) and the failure table above, which is from 2026-11-05. The numbers of 2026-11-05 were
+The ± is one standard error.
+
+On 2026-11-18, on the `Standard_B4as_v2` VM with float32: one review takes 6.2 to 6.6 s through `POST /score` or
+`POST /ask`; after an update the API answered `/health` again 10 s and 45 s after its container was replaced (two
+updates, base model already in the volume).
+
+Not yet measured on the server: the failure table above, which is from 2026-11-05. The numbers of 2026-11-05 were
 for the previous tabular API on a 1 GB VM and no longer apply.

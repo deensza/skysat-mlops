@@ -9,7 +9,7 @@ complaint. The model is one LoRA adapter on a frozen 1.5B LLM. Passengers' revie
 arrive at the server's **intake** and wait in a **queue**. A **trainer** on a rented **RunPod GPU** takes batches from
 the queue, trains, gates, and registers in **MLflow**. The API serves the **champion**, logs every answer to
 **PostgreSQL**, **Grafana** shows it, **drift** is checked on the live reviews' true labels. **CI** tests the code
-and builds the image; a drift alarm starts the training by itself (switched on since 17 Nov 2026; how far it has got
+and builds the image; a drift alarm starts the training by itself (the repository variable `AUTO_RETRAIN` switches it; how far it has got
 is in [section 6](#6-ci-cd-and-the-schedule)). The deploy job is written but off: the server is updated by hand.
 
 ## 2. The big picture
@@ -91,8 +91,9 @@ What a real level 2 system has that this one does not:
 - One small server and no staging environment: the new image goes straight to the only server.
 - The deploy step is done by hand: the deploy job is off.
 - The loop is young: switched on on 17 Nov 2026.
-  That day the chain ran end to end once: a drift alarm called the Train workflow, which rented a GPU, trained, and
-  promoted version 6. Each drift check of that day was started by hand: GitHub's hourly schedule had not started one by 17:35 UTC.
+  It first ran end to end that day: a drift alarm called the Train workflow, which rented a GPU, trained, and
+  promoted a new version. The runs since are on the Actions page, the versions in the registry. Each drift check that
+  led to a training was started by hand: GitHub's hourly schedule fires only now and then.
   Two scheduled runs came later (21:53 UTC on 17 Nov, 03:49 UTC on 18 Nov); both failed because the server was off.
 
 ## 3. The services (docker-compose.yml)
@@ -212,9 +213,10 @@ off. Not seen yet: a scheduled check that reaches the server.
 - A live review can be trained on only after the model has scored it (since 17 Nov 2026), and the server scores
   roughly 0.85 reviews a minute: 300 new reviews are ready for training about six hours after they arrive.
 - The automatic loop (`drift.yml` -> `train.yml`) needs the secrets and variables in
-  [server.md](server.md#switching-it-on) and `AUTO_RETRAIN=true`. It has been on since 17 Nov 2026.
-  That day the chain ran end to end once: a drift alarm called the Train workflow, which rented a GPU, trained, and
-  promoted version 6. Each drift check of that day was started by hand: GitHub's hourly schedule had not started one by 17:35 UTC.
+  [server.md](server.md#switching-it-on) and `AUTO_RETRAIN=true`; any other value pauses it. The settings exist since 17 Nov 2026.
+  It first ran end to end that day: a drift alarm called the Train workflow, which rented a GPU, trained, and
+  promoted a new version. The runs since are on the Actions page, the versions in the registry. Each drift check that
+  led to a training was started by hand: GitHub's hourly schedule fires only now and then.
   Two scheduled runs came later (21:53 UTC on 17 Nov, 03:49 UTC on 18 Nov); both failed because the server was off.
 - The pod's log cannot be read with this project's RunPod key (403), so a training that registered nothing ends as a
   failed run without saying why: the gate, too few reviews, or a crash.
