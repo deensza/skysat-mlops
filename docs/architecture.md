@@ -71,8 +71,9 @@ Google's "MLOps: Continuous delivery and automation pipelines in machine learnin
 What makes it level 2 here:
 
 - A code change goes through tests (`tests/`, `nginx -t`) and an image on ghcr.io. The deploy job (pull on the server,
-  smoke test, back to the image that was running if it fails) is written but has never run: there is no self-hosted
-  runner and `DEPLOY_TO_RUNNER` is unset, so the server is updated by hand with `az vm run-command`
+  smoke test, back to the image that was running if it fails) ran once, on 13 Nov 2026 (run 43416289152), and is off
+  since: there is no self-hosted runner and `DEPLOY_TO_RUNNER` is unset. The version with the rollback has never run.
+  The server is updated by hand with `az vm run-command`
   ([server.md](server.md#switching-it-on)).
 - Drift starts the training: `drift.yml` checks the serving model, opens an issue and, if `AUTO_RETRAIN` is `true`,
   calls `train.yml`, which rents a RunPod pod, trains, gates, and registers in MLflow. The API loads the new champion
@@ -91,7 +92,8 @@ What a real level 2 system has that this one does not:
 - The deploy step is done by hand: the deploy job is off.
 - The loop is young: switched on on 17 Nov 2026.
   That day the chain ran end to end once: a drift alarm called the Train workflow, which rented a GPU, trained, and
-  promoted version 6. Each drift check was started by hand: GitHub's hourly schedule has not started one yet.
+  promoted version 6. Each drift check of that day was started by hand: GitHub's hourly schedule had not started one by 17:35 UTC.
+  Two scheduled runs came later (21:53 UTC on 17 Nov, 03:49 UTC on 18 Nov); both failed because the server was off.
 
 ## 3. The services (docker-compose.yml)
 
@@ -114,7 +116,8 @@ the read-only Grafana database user and the restart policies ([server.md](server
 2. The Train workflow or `make train-remote` (RunPod, RTX 3070 at $0.13/h) or `make llm-train` (this PC): the trainer
    claims the newest pending reviews that the model has already scored (training-only reviews count as scored), keeps
    10% back for the gate, and LoRA-tunes on the rest (1,800 reviews, 322 s on an RTX 4070 Laptop).
-3. The gate (`llm/gate.py`): MAE <= 1.0, recommended >= 0.90, complaint >= 0.65. v1 from the queue: 0.88, 92.0%, 71.5%.
+3. The gate (`llm/gate.py`): MAE <= 1.0, recommended >= 0.90, complaint >= 0.65. v1 from the queue (local run of 16 Nov; the server's version 1 is another run, see
+   [llm.md](llm.md#the-gate-and-what-it-measured)): 0.88, 92.0%, 71.5%.
 4. Logged to MLflow (parameters, metrics, the 17 MB adapter), registered as `skysat-reviews`; it becomes `champion` if
    no champion exists or it beats the champion on the same gate reviews (`combined`). The batch is marked trained if a
    version was registered; if the gate fails it goes back to pending.
@@ -134,20 +137,21 @@ Malformed answers are `null` fields and count as wrong in the live measures.
 
 ## 6. CI, CD and the schedule
 
-What has run, as of 17 Nov 2026: `ci.yml` on every pull request and push to `main` (tests and image; never its
-deploy job); `drift.yml` by hand; `train.yml` by hand three times, each renting a RunPod GPU, and as a job of the drift
+What has run, as of 17 Nov 2026: `ci.yml` on every pull request and push to `main` (tests and image; its
+deploy job once, on 13 Nov 2026); `drift.yml` by hand; `train.yml` by hand three times, each renting a RunPod GPU, and as a job of the drift
 check.
 The drift check called `train.yml` four times on 17 Nov: three times no GPU was free and nothing was
 rented; the fourth time (15:09 UTC) it rented an RTX 3080 Ti, trained, and promoted version 6
-([server.md](server.md#what-has-run-17-nov-2026)). Not seen yet: a scheduled run of `drift.yml`.
+([server.md](server.md#what-has-run-17-nov-2026)). Scheduled runs of `drift.yml` came later (21:53 UTC on 17 Nov, 03:49 UTC on 18 Nov); both failed because the server was
+off. Not seen yet: a scheduled check that reaches the server.
 
 - `ci.yml`: pytest (no torch; the queue's SQL and `tests/test_pipeline.py` against a PostgreSQL service), `nginx -t` on
   both gateway configs, `docker compose config` for both compose files, build the `llm/Dockerfile` image. It runs for
   pushes and pull requests to `main`. On a push to `main` the image is pushed to ghcr.io and, if the server's runner
-  and `DEPLOY_TO_RUNNER` are set, deployed and smoke-tested. Neither is set, so the deploy job has never run: the
-  server is updated by hand with `az vm run-command` ([server.md](server.md#switching-it-on)). As written, the deploy
-  job remembers the running image and rolls back to it if the smoke test fails (only the image, not the compose or
-  gateway files). It does not set the `MLFLOW_*` values itself. It never runs for pull requests.
+  and `DEPLOY_TO_RUNNER` are set, deployed and smoke-tested. Neither is set now. The deploy job ran once, on 13 Nov
+  2026 (run 43416289152), and is skipped since: the server is updated by hand with `az vm run-command`
+  ([server.md](server.md#switching-it-on)). As written, the deploy job remembers the running image and rolls back to it
+  if the smoke test fails (only the image, not the compose or gateway files); that version has never run. It does not set the `MLFLOW_*` values itself. It never runs for pull requests.
 - `drift.yml`: scheduled hourly at :35. `llm/drift_check.py` asks `/model` which version is serving and judges only that
   version's answers in `/scores/recent?version=N` (`--all-versions` counts all): after a promotion the old model's
   answers no longer count, so a problem that is already fixed does not ask for another retraining. On DRIFT it opens one
@@ -156,8 +160,9 @@ rented; the fourth time (15:09 UTC) it rented an RTX 3080 Ti, trained, and promo
   the problem (with the default, 500 replayed reviews, the retraining of 16 Nov failed the gate; without them it
   passed, see [llm.md](llm.md#the-gate-and-what-it-measured)). A scheduled run with missing secrets is skipped with a
   warning.
-  On 17 Nov 2026 GitHub started no scheduled run at all ([server.md](server.md#what-has-run-17-nov-2026)): every
-  run that day was started by hand.
+  On 17 Nov 2026 GitHub started no scheduled run until after 17:35 UTC ([server.md](server.md#what-has-run-17-nov-2026)):
+  every run of the working day was started by hand. The two scheduled runs since (21:53 UTC on 17 Nov, 03:49 UTC on
+  18 Nov) failed in the check step because the server was off: no issue, no training.
 - `train.yml` ("Train"): started by `drift.yml` or by hand. It checks its settings, respects a cooldown (variable
   `TRAIN_COOLDOWN_HOURS`, default 6: no automatic run if a GPU was rented less than that long ago, by either workflow,
   whether that training worked or not; a run that found no free GPU rented nothing and does not count; a run started
@@ -209,7 +214,8 @@ rented; the fourth time (15:09 UTC) it rented an RTX 3080 Ti, trained, and promo
 - The automatic loop (`drift.yml` -> `train.yml`) needs the secrets and variables in
   [server.md](server.md#switching-it-on) and `AUTO_RETRAIN=true`. It has been on since 17 Nov 2026.
   That day the chain ran end to end once: a drift alarm called the Train workflow, which rented a GPU, trained, and
-  promoted version 6. Each drift check was started by hand: GitHub's hourly schedule has not started one yet.
+  promoted version 6. Each drift check of that day was started by hand: GitHub's hourly schedule had not started one by 17:35 UTC.
+  Two scheduled runs came later (21:53 UTC on 17 Nov, 03:49 UTC on 18 Nov); both failed because the server was off.
 - The pod's log cannot be read with this project's RunPod key (403), so a training that registered nothing ends as a
   failed run without saying why: the gate, too few reviews, or a crash.
 - Every GPU type in the list can be out of stock at once; then nothing trains until a later drift check finds one
@@ -217,6 +223,6 @@ rented; the fourth time (15:09 UTC) it rented an RTX 3080 Ti, trained, and promo
 - The trainings of 16 and 17 Nov that produced versions 3 and 4 did not run on RunPod: they ran on a Google Colab T4
   started by hand. Colab is not a supported way to train; there is no Colab code in the repository. The RunPod runs
   are in [llm.md](llm.md#runpod-the-trainers-gpu).
-- The deploy job has never run (no runner on the server); its rollback restores only the image, not the compose or
-  gateway files.
+- The deploy job ran once (13 Nov 2026, run 43416289152) and is off since (no runner on the server); its rollback has
+  never run and restores only the image, not the compose or gateway files.
 - There is one server and no staging environment.

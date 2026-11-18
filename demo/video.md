@@ -13,7 +13,7 @@ Open points:
 
 | # | Time | Screen | Command | Say |
 |---|---|---|---|---|
-| 1 | 0:00-0:30 | MLflow → Models → `skysat-reviews` | – | "A 1.5B LLM with a 17 MB LoRA adapter, trained in 5 minutes. The gate: MAE 0.88, recommended 92.0%, complaint 71.5%. Version 1 is the champion." |
+| 1 | 0:00-0:30 | MLflow → Models → `skysat-reviews` | – | "A 1.5B LLM with a 17 MB LoRA adapter, trained in 5 minutes. The gate, in the local demo run shown here: MAE 0.88, recommended 92.0%, complaint 71.5%. Version 1 is the champion." |
 | 2 | 0:30-0:50 | Terminal | `dmake smoke` | "One review through Nginx: score, recommended, main complaint, model version, latency." |
 | 3 | 0:50-1:10 | Grafana | `dmake simulate FROM=2019-01 MONTHS=1 PER_MONTH=30` | "Real 2019 reviews with their true labels. Real drift does not hurt this model: MAE 0.95, recommended 95%." |
 | 4 | 1:10-1:40 | Terminal → Grafana | `dmake simulate FROM=2019-02 MONTHS=1 PER_MONTH=300 SCENARIO=harsh` | "A harsher survey. Live MAE and recommended accuracy cross the red lines: MAE 1.15, recommended 89%." |

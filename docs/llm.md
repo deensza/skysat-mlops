@@ -95,6 +95,11 @@ on the same gate reviews, logs to MLflow, registers the version if it passes, an
 | v2 (13 Nov) | harsh 2019 | harsh 2019 | 0.41 | 95.5% | | passes, beats v1 |
 | **v1 from the queue** (16 Nov) | 1,800 of 2,000 seeded, 322 s, RTX 4070 Laptop | 200 kept back | 0.88 | 92.0% | 71.5% | passes, champion |
 
+The row "v1 from the queue" is a local training run of 16 Nov 2026 (RTX 4070 Laptop, local MLflow). The version 1 that
+the server serves is another run, the one of the first row, registered in the team's DagsHub MLflow on 13 Nov 2026
+(run a371483b, started 12:42 UTC): 2,000 training reviews, 1 epoch, 200 evaluation reviews; `score_mae` 0.91,
+`recommended_accuracy` 0.945, `complaint_accuracy` 0.67 (the row says 68%), combined 0.838.
+
 Real 2019-2022 reviews look like the training reviews to this model (MAE 0.75-0.83 in the 13 Nov runs), so the drift
 in the demo is simulated with `harsh`.
 
@@ -126,7 +131,7 @@ RunPod through the Train workflow on GitHub: run 4 started by hand, run 5 starte
 | 2 | 298 of the 398 live reviews + 500 replayed history reviews, 1,003 s | 100 kept back | 1.07 / 87.0% / 67.0% / 0.807 | 1.18 / 85.0% / 68.0% / 0.800 | **fails the gate**, not registered; the batch went back to pending |
 | 3 | 298 of the 398 live reviews, no replay, 3 epochs (447 steps), 1,153 s | 100 kept back | 0.60 / 93.0% / 72.0% / 0.861 | 1.13 / 90.0% / 72.0% / 0.831 | passes, registered as **version 4, the new champion**; the server loaded it 13 s later |
 | 4 (17 Nov, RunPod RTX 3070, Train run 44030831433, started by hand) | a batch of 300 queue reviews less the gate reviews, no replay, 3 epochs; the pod existed about 5 minutes | 100 kept back | 0.33 / 93.0% / 68.0% / 0.858 | combined 0.861 (the other measures were not noted) | passes, registered as version 5; the champion stays version 4 (0.861 >= 0.858) |
-| 5 (17 Nov, RunPod RTX 3080 Ti, started by the drift check, run 44111118456) | a batch of 405 queue reviews less the gate reviews, no replay, 3 epochs; the pod existed 5 min 32 s | kept back from the batch | in its MLflow run; not read for this page | in its MLflow run | registered as **version 6 and promoted**: the trainer registers only what passes the gate and promotes only what beats the champion on the same reviews. The server loaded it and served it until the alias was moved back to version 1 by hand (by 17:12 UTC) |
+| 5 (17 Nov, RunPod RTX 3080 Ti, started by the drift check, run 44111118456) | a batch of 405 queue reviews less the gate reviews, no replay, 3 epochs; the pod existed 5 min 32 s | 100 kept back (305 trained on) | 0.23 / 100.0% / 71.0% / 0.895 (within 1 point 0.94; DagsHub run a62a1127; 80 s of training) | combined 0.735 (v4; the other measures were not read) | registered as **version 6 and promoted**: the trainer registers only what passes the gate and promotes only what beats the champion on the same reviews. The server loaded it and served it until the alias was moved back to version 1 by hand (by 17:12 UTC) |
 
 What run 2 shows. The retrained adapter beat the champion on the drifted reviews (0.807 against 0.800) but did not
 reach the gate, so nothing was registered and version 1 went on serving. `harsh` changes the labels and leaves the
@@ -201,8 +206,9 @@ the list (RTX 4090, $0.34/h) is the upper bound, about $0.26 per run.
 
 The automatic chain on 17 Nov 2026: drift check -> DRIFT -> issue -> Train workflow -> cooldown and queue check ->
 pod -> gate -> version 6 registered and promoted -> the server loaded it. It completed once, at the fourth call; the
-first three found no free GPU. The drift checks were started by hand: GitHub's hourly schedule did not start one that
-day. Not in the log: version 6's gate numbers (they are in its MLflow run).
+first three found no free GPU. The drift checks were started by hand: GitHub's hourly schedule had not started one by 17:35 UTC that
+day (two scheduled runs came later and failed: the server was off). Not in the log: version 6's gate numbers; they are in its DagsHub run (table above): recommended 100.0% is on 100
+reviews only.
 Version 6 was not judged on live traffic: it had served 58 requests (the check needs 100) when the alias was moved
 back to version 1 by hand, by 17:12 UTC.
 

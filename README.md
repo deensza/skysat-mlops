@@ -41,7 +41,7 @@ The same day the automatic chain ran end to end once. The drift check found drif
 81.2% on 591 requests) and called the Train workflow; a pod on an RTX 3080 Ti ($0.18/h) existed for 5 min 32 s (about
 2 cents); version 6 was registered and promoted, and the server loaded it. Three calls before that, between 13:12 and
 14:24 UTC, rented nothing: no GPU type in the list was free. Every drift check that day was started by hand, because
-GitHub's hourly schedule did not start one.
+GitHub's hourly schedule had not started one by 17:35 UTC.
 Version 6 was not judged on live traffic: it had answered 58 requests (the check needs 100) when the champion alias
 was moved back to version 1 by hand, by 17:12 UTC. The drift check of 17:32 UTC read version 1 again: 71 requests, too
 few for a verdict.
@@ -112,7 +112,8 @@ By Google's three levels (manual, ML pipeline automation, CI/CD pipeline automat
 image and deploy with rollback, and a drift alarm that starts the training workflow. The loop has been switched on
 since 17 Nov 2026 (secrets and variables set, `AUTO_RETRAIN=true`).
 That day the chain ran end to end once: a drift alarm called the Train workflow, which rented a GPU, trained, and
-promoted version 6. Each drift check was started by hand: GitHub's hourly schedule has not started one yet.
+promoted version 6. Each drift check of that day was started by hand: GitHub's hourly schedule had not started one by 17:35 UTC.
+Two scheduled runs came later (21:53 UTC on 17 Nov, 03:49 UTC on 18 Nov); both failed because the server was off.
 The deploy job is still off (no self-hosted runner, `DEPLOY_TO_RUNNER` unset): the server is updated by hand with
 `az vm run-command`. What a real level 2 system has that this one does not:
 [docs/architecture.md](docs/architecture.md#mlops-level).
@@ -126,7 +127,7 @@ The deploy job is still off (no self-hosted runner, `DEPLOY_TO_RUNNER` unset): t
 | Serve | `api` service (`llm/serve.py`, CPU, 8 GB), behind Nginx: `/score`, `/model`, `/health`, `/docs` |
 | Monitor | `llm_scores` table → Grafana; `GET /scores/recent?hours=N` returns aggregates only |
 | Drift | `llm/drift_check.py`: DRIFT if the live MAE of the serving model > 1.0 or its recommended accuracy < 0.90 by more than the sampling noise, on >= 100 labelled requests |
-| CI/CD | `ci.yml`: tests (including `tests/test_pipeline.py`), `nginx -t`, compose check, image build; on pushes to main the image goes to ghcr.io. The deploy job (rollback to the running image if the smoke test fails) is written but off: no self-hosted runner, `DEPLOY_TO_RUNNER` unset, so it has never run and the server is updated by hand |
+| CI/CD | `ci.yml`: tests (including `tests/test_pipeline.py`), `nginx -t`, compose check, image build; on pushes to main the image goes to ghcr.io. The deploy job (rollback to the running image if the smoke test fails) is written but off: no self-hosted runner, `DEPLOY_TO_RUNNER` unset. It ran once, on 13 Nov 2026 (run 43416289152), and has been off since; the version with the rollback has never run. The server is updated by hand |
 | Retrain | `train.yml`: started by `drift.yml` (only if `AUTO_RETRAIN` is `true`) or by hand; cooldown, needs >= 300 `ready` reviews (pending and already scored by the model as live traffic), rents a RunPod GPU for at most 45 minutes, then checks no pod is left. Switched on since 17 Nov 2026; that day it trained on RunPod by hand and once started by the drift check ([docs/llm.md](docs/llm.md#what-ran-on-runpod-17-nov-2026)). Also `make train-remote` |
 
 See [docs/architecture.md](docs/architecture.md) for the picture and [docs/server.md](docs/server.md) for the always-on server.
