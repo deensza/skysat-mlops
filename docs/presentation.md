@@ -145,7 +145,7 @@ Measured through the server, 16 and 17 Nov 2026 ([llm.md](llm.md#through-the-ser
   started by hand; two scheduled runs came later (21:53 UTC, 03:49 UTC on 18 Nov) and failed because the server was off
 
 > Notes: say plainly how far the automatic chain got ([server.md](server.md#what-has-run-17-nov-2026)).
-> The chain ran end to end once on 17 Nov (15:09 UTC), but the drift check was started by hand: GitHub's schedule had
+> The chain first ran end to end on 17 Nov (15:09 UTC; later runs are on the Actions page), but the drift check was started by hand: GitHub's schedule had
 > not fired by 17:35 UTC that day (two scheduled runs came later and failed: the server was off). Version 6 was not judged on live traffic: after 58 requests (the check needs 100) the alias was moved back to
 > version 1 by hand. Also say: on GitHub a Train run looks failed unless it registered a version, because RunPod does not
 > let our key read the pod's log; the outcome comes from the server.
@@ -157,8 +157,8 @@ Measured through the server, 16 and 17 Nov 2026 ([llm.md](llm.md#through-the-ser
 - SkySat: queue -> trainer -> gate -> registry (level 1); `ci.yml` and `drift.yml` -> `train.yml` (level 2)
 - Missing for a real level 2: an orchestrator such as Kubeflow or Airflow (GitHub Actions plays that part), a feature
   store, data validation beyond the intake's checks, a staging environment
-- The loop has been on since 17 Nov 2026; the deploy step is still done by hand. The chain ran end to end
-  once on 17 Nov 2026; the hourly schedule had not fired by 17:35 UTC that day, so each check was started by hand (two scheduled runs came
+- The loop exists since 17 Nov 2026 (`AUTO_RETRAIN` switches it); the deploy step is still done by hand. The chain first ran end to end
+  on 17 Nov 2026; the hourly schedule had not fired by 17:35 UTC that day, so each check was started by hand (two scheduled runs came
   later and failed: the server was off)
 
 > Notes: the three levels are from Google's "MLOps: Continuous delivery and automation pipelines in machine learning".
@@ -199,5 +199,5 @@ Videos: [server and retraining loop](https://drive.google.com/file/d/1Ulbq2-DxDo
 - Real drift did not hurt, so is the drift demo fake? (The scenario is simulated and we say so; the monitoring and the retrain path are real)
 - What happens if MLflow is down? (the API keeps the adapter it has and retries; a logging failure never breaks serving)
 - How do you stop a worse adapter from going to production? (the gate, and it must beat the champion on the same reviews)
-- Is retraining automatic? (yes, since 17 Nov 2026: a drift alarm starts the Train workflow, which rents a RunPod GPU. It ran end to end once on 17 Nov: drift on version 4, a rented RTX 3080 Ti, version 6 promoted, about 2 cents. The drift check was started by hand, because GitHub's hourly schedule had not fired by 17:35 UTC)
+- Is retraining automatic? (yes, since 17 Nov 2026: a drift alarm starts the Train workflow, which rents a RunPod GPU. It first ran end to end on 17 Nov: drift on version 4, a rented RTX 3080 Ti, version 6 promoted, about 2 cents. The drift check was started by hand, because GitHub's hourly schedule had not fired by 17:35 UTC)
 - Where does production run, and what does it store? (an always-on VM, [server.md](server.md); numbers only, never review text)

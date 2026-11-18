@@ -7,8 +7,9 @@
 # `true` it also starts the Train workflow (train.yml), which rents a RunPod GPU. The cooldown (TRAIN_COOLDOWN_HOURS)
 # and the "at least 300 ready reviews" check in train.yml (ready: pending and already scored by the model as live
 # traffic) stop it from renting GPUs in a loop; a run that found no free GPU rented nothing and does not count for the
-# cooldown, so the next check may try again. The new adapter is promoted only if it beats the champion. The run's
-# summary page shows the table (numbers, never rows).
+# cooldown, so the next check may try again. The new adapter is promoted only if it beats the champion, and a
+# promotion closes the issue (.github/scripts/close-drift-issue.sh, called by train.yml). The run's summary page shows
+# the table (numbers, never rows).
 # Runs every hour. If a secret is missing, a scheduled run only warns (no hourly red run); a run by hand fails.
 #
 # Switch it off: `gh workflow disable drift.yml`, or leave AUTO_RETRAIN unset or not `true` (the issue is still opened).
