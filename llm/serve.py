@@ -1,6 +1,7 @@
 """Complaint-box API: the LoRA-tuned LLM (llm/train_lora.py) behind HTTP, on CPU.
 
     POST /score       one airline review -> score out of 10, recommended yes/no, the main complaint
+    POST /ask         the same answer for a review sent as plain text (one text box on the /docs page); not logged
     GET  /health      200 once a model is loaded (used by Docker and Nginx), 503 before
     GET  /scores/recent?hours=N[&version=V]   aggregates of the last N hours of the prediction log (never text),
                       of one model version if given: the drift check reads it
@@ -33,7 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -307,8 +308,8 @@ def require_model() -> dict:
     return serving.current
 
 
-@app.post("/score")
-def score(req: ScoreRequest):
+def read_review(req: ScoreRequest) -> tuple[dict, dict, int]:
+    """The model's answer to one review: (the parsed three lines, the model that answered, milliseconds)."""
     require_model()
     prompt = chat(serving.tok, format_prompt(prompt_row(req)))
     if not serving.lock.acquire(timeout=QUEUE_SECONDS):
@@ -321,11 +322,38 @@ def score(req: ScoreRequest):
     finally:
         serving.lock.release()
     log.info("Score: %d tokens in %d ms (%.1f tokens/s)", n_tokens, latency_ms, n_tokens / max(latency_ms, 1) * 1000)
-    parsed = parse_output(text)
+    return parse_output(text), current, latency_ms
+
+
+@app.post("/score")
+def score(req: ScoreRequest):
+    parsed, current, latency_ms = read_review(req)
     if db:
         log_score({"model_version": current["version"], "latency_ms": latency_ms, **parsed,
                    "true_score": req.true_score, "true_recommended": req.true_recommended})
     return {**parsed, "model_version": current["version"], "latency_ms": latency_ms}
+
+
+# Ready-made reviews for the /docs page: POST /ask -> "Try it out" -> pick one from the list, or type your own
+ASK_EXAMPLES = {
+    "happy": {"summary": "A happy passenger", "value": "Everything went smoothly from check-in to landing. The crew "
+              "were warm, the meal was hot and tasty, and we arrived early. I will fly with them again."},
+    "food": {"summary": "Bad food", "value": "The lasagne was still frozen in the middle and the bread was stale. The "
+             "seat was fine, but for a nine hour flight the food was not acceptable."},
+    "crew": {"summary": "Rude cabin crew", "value": "The cabin crew ignored the call button for an hour and one of "
+             "them rolled her eyes when I asked for water. I have never been treated so rudely on a flight."},
+}
+
+
+@app.post("/ask")
+def ask(review: str = Body(media_type="text/plain", min_length=1, max_length=50_000, openapi_examples=ASK_EXAMPLES,
+                           description="A review in your own words, as plain text")):
+    """Try the model: type a review, get its answer. On the `/docs` page: "Try it out", type into the box (or pick an
+    example), "Execute". The same model and prompt as `POST /score`, without the other fields and without JSON. The
+    answer is not added to the prediction log, so trying things out changes neither the dashboard nor the drift
+    check."""
+    parsed, current, latency_ms = read_review(ScoreRequest(review=review))
+    return {"review": review, **parsed, "model_version": current["version"], "latency_ms": latency_ms}
 
 
 @app.get("/scores/recent")

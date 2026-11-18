@@ -242,6 +242,9 @@ server's `.env`) the intake starts a trainer pod by itself when `TRAIN_MIN_PENDI
 - `POST /score`: `airline`, `cabin`, `travel_type`, `title`, `review` (and optionally `true_score`,
   `true_recommended`) -> `score`, `recommended`, `complaint` (each `null` if the answer was malformed),
   `model_version`, `latency_ms`. 15-24 s per review on a laptop CPU.
+- `POST /ask`: the review as plain text in the request's body (no JSON, no other fields) -> the same answer, with
+  the review repeated in it. On the `/docs` page it is one text box with three ready-made reviews to pick from. It is
+  not added to `llm_scores`, so trying the model out changes neither the dashboard nor the drift check.
 - **One review at a time** (a lock): one generation already uses every CPU core, and there is one model in memory.
 - **A new champion is a new adapter, not a new model**: every `MODEL_RELOAD_SECONDS` the alias is checked; a new version
   is loaded next to the old adapter on the same base, switched to, and the old one deleted. An adapter whose

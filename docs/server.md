@@ -24,7 +24,7 @@ internet -> Azure firewall (only 80, 443) -> Caddy (HTTPS) -> Nginx (rate limit,
 | Encryption | Let's Encrypt certificate, renewed by Caddy; port 80 only redirects | HTTP answers 308 to HTTPS |
 | Password guessing and flooding | 20 requests/s per address (burst 100), checked **before** the login; addresses a client makes up are ignored | 429 under load, the tutor still gets in right after |
 | Oversized requests | 64 kB body limit (a review is a few kB; the API accepts 50,000 characters) | 100 kB: 413 *(re-check: the old 16 kB limit was the one tested)* |
-| Nothing else reachable | Azure firewall: 80 and 443 only, SSH closed. PostgreSQL and the health port listen on the server itself; Nginx forwards only `/score`, `/model`, `/health`, `/docs`, `/openapi.json`, `/scores/recent`, `/grafana/`, `/reviews` (to the intake, any login), and `/queue/claim|done|stats` (to the intake, **only for the `trainer` login**: 403 for anyone else) | 22, 3000, 5432, 8001, 8080 closed from outside |
+| Nothing else reachable | Azure firewall: 80 and 443 only, SSH closed. PostgreSQL and the health port listen on the server itself; Nginx forwards only `/score`, `/ask`, `/model`, `/health`, `/docs`, `/openapi.json`, `/scores/recent`, `/grafana/`, `/reviews` (to the intake, any login), and `/queue/claim|done|stats` (to the intake, **only for the `trainer` login**: 403 for anyone else) | 22, 3000, 5432, 8001, 8080 closed from outside |
 | A viewer cannot damage the log | Grafana's viewers can send their own SQL, so its data source is a read-only database user, `grafana_reader` | `DROP`, `DELETE`, reading server files, running programs: all denied |
 
 Not protected against: someone who gets a password can use the API within the limits, and the DagsHub token sits in the

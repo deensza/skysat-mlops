@@ -101,7 +101,7 @@ What a real level 2 system has that this one does not:
 |---|---|---|
 | `api` | `llm/serve.py`: base model + adapter, one review at a time, `mem_limit` 8 GB, base model cached in the `llm-models` volume | internal 8000 |
 | `intake` | `llm/intake.py` (same image): `POST /reviews` -> queue, each live review to `api` with its true labels, `/queue/*` for the trainer | 127.0.0.1:8001 |
-| `nginx` | gateway; routes `/score`, `/model`, `/health`, `/docs`, `/scores/recent`, `/reviews`; on the server also `/queue/*` for the `trainer` login | 8080 |
+| `nginx` | gateway; routes `/score`, `/ask`, `/model`, `/health`, `/docs`, `/scores/recent`, `/reviews`; on the server also `/queue/*` for the `trainer` login | 8080 |
 | `mlflow` | local registry (or the shared one from `.env`) | 5050 |
 | `postgres` | `llm_scores` (`monitoring/init.sql`) and the schema `queue` | 5432 |
 | `grafana` | dashboard `skysat`, anonymous read-only | 3000 |
