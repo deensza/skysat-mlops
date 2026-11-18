@@ -126,7 +126,7 @@ The deploy job is still off (no self-hosted runner, `DEPLOY_TO_RUNNER` unset): t
 |---|---|
 | Intake | `intake` service (`llm/intake.py`): `POST /reviews` into `queue.reviews`; each live review to `/score` with its true labels |
 | Train + gate + register | `llm/trainer.py` on a RunPod GPU (`llm/runpod_pod.py`) or this PC; MLflow experiment `skysat-llm`, model `skysat-reviews`, alias `champion` |
-| Serve | `api` service (`llm/serve.py`, CPU, 8 GB), behind Nginx: `/score`, `/model`, `/health`, `/docs` |
+| Serve | `api` service (`llm/serve.py`, CPU, 8 GB), behind Nginx: `/score`, `/ask` (a typed review as plain text, not logged), `/model`, `/health`, `/docs` |
 | Monitor | `llm_scores` table → Grafana; `GET /scores/recent?hours=N` returns aggregates only |
 | Drift | `llm/drift_check.py`: DRIFT if the live MAE of the serving model > 1.0 or its recommended accuracy < 0.90 by more than the sampling noise, on >= 100 labelled requests |
 | CI/CD | `ci.yml`: tests (including `tests/test_pipeline.py`), `nginx -t`, compose check, image build; on pushes to main the image goes to ghcr.io. The deploy job (rollback to the running image if the smoke test fails) is written but off: no self-hosted runner, `DEPLOY_TO_RUNNER` unset. It ran once, on 13 Nov 2026 (run 43416289152), and has been off since; the version with the rollback has never run. The server is updated by hand |

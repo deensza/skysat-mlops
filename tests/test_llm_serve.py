@@ -91,6 +91,21 @@ def test_score_a_review(fake, tmp_path):
     assert "Airline: Imaginary Air" in user["content"] and REVIEW in user["content"]
 
 
+def test_ask_answers_a_typed_review_and_logs_nothing(fake, tmp_path, monkeypatch):
+    pool = FakePool()
+    monkeypatch.setattr(serve, "db", pool)
+    with pytest.raises(HTTPException) as err:
+        serve.ask(review=REVIEW)
+    assert err.value.status_code == 503  # no model yet
+
+    serve.serving.install(write_adapter(tmp_path / "adapter"), "3", "test")
+    out = serve.ask(review=REVIEW)
+    assert out == {"review": REVIEW, "score": 7, "recommended": "yes", "complaint": "food", "model_version": "3",
+                   "latency_ms": out["latency_ms"]}
+    assert REVIEW in json.loads(fake.prompts[0])[1]["content"]  # the same prompt as POST /score
+    assert pool.executed == []  # trying the model out is not traffic: nothing reaches llm_scores
+
+
 def test_malformed_model_output_gives_none_fields(fake, tmp_path):
     fake.answer = "I think this passenger was unhappy."
     serve.serving.install(write_adapter(tmp_path / "adapter"), "3", "test")
