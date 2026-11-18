@@ -7,9 +7,9 @@ Team: Bermal Deniz Akkaya, Osman Şahin Güler
 
 Demo videos: [the server and its retraining loop](https://drive.google.com/file/d/1Ulbq2-DxDoxo9LLP3ISe-qSe07x_d64b/view) (2:18) · [the Kaggle competition, the project's first model](https://drive.google.com/file/d/1dPYeIG6mb0o7lfYjoIIgoqsWV4Z0CbQd/view) (1:46) · [folder](https://drive.google.com/drive/folders/1kfRWCZTZPatf758JnG09AcfO2DWUIb80)
 
-Live demo: [demo/demo.sh](demo/demo.sh) shows the running system in eight steps, about 3 minutes with `--timed`
-(with `--train` it also starts a real training on a rented GPU and shows its result at the end);
-[demo/demo.md](demo/demo.md) is the same demo as commands to type.
+Live demo: [demo/demo.md](demo/demo.md) is the plan for the presentation, about 9 minutes, with one real training on
+a rented GPU started just before it and its result shown at the end. [demo/demo.sh](demo/demo.sh) is a shorter
+scripted tour of the running system, about 3 minutes with `--timed`.
 
 SkySat is a **complaint box** for airline reviews. A small LLM (Qwen2.5-1.5B-Instruct, LoRA-tuned) reads a real
 review and answers with the score out of 10, whether the reviewer would recommend the airline, and the main complaint.
@@ -52,6 +52,15 @@ Version 6 was not judged on live traffic: it had answered 58 requests (the check
 was moved back to version 1 by hand, by 17:12 UTC. The drift check of 17:32 UTC read version 1 again: 71 requests, too
 few for a verdict.
 
+On 18 Nov 2026 the chain ran again with nobody touching it after the drift check was started (by hand, 05:43 UTC,
+[run 44246174603](https://github.com/deensza/skysat-mlops/actions/runs/44246174603)). The check found drift on version
+1 (MAE 1.374, recommended 83.8% on 364 labelled requests), opened issue 24 and called the Train workflow. A pod on an
+RTX 3080 Ti ($0.18/h) existed for 8 min 43 s (about 3 cents) and trained on 420 reviews. Version 7 (MAE 0.59,
+recommended 93.0%, complaint 73.0%) passed the gate, beat version 1 on the same 100 held-back reviews (combined 0.865
+against 0.795), was promoted, and the server loaded it by itself. Two test runs the same afternoon, from the branch
+`level2-loop` with `--no-promote`, registered versions 8 and 9 on an RTX 3070; neither became the champion. Which
+version serves at any moment is not written here: see "Where the current state is" below.
+
 Why the first retraining failed, and every run: [docs/llm.md](docs/llm.md#the-gate-and-what-it-measured).
 
 ## Data and licence
@@ -75,7 +84,7 @@ Why the first retraining failed, and every run: [docs/llm.md](docs/llm.md#the-ga
 | `loadtest/` | k6 test for `POST /score` |
 | `tests/` | Automated tests (pytest, no GPU; the queue's SQL against a real PostgreSQL in CI) |
 | `docs/` | [LLM](docs/llm.md), [architecture](docs/architecture.md), [server](docs/server.md), [presentation](docs/presentation.md) |
-| `demo/` | [The live demo as a script](demo/demo.sh), [the same by hand](demo/demo.md), [the recorded demo's runbook](demo/README.md) |
+| `demo/` | [a scripted tour](demo/demo.sh), [the live demo plan](demo/demo.md), [the recorded demo's runbook](demo/README.md) |
 | `.github/workflows/` | CI/CD (`ci.yml`), drift check (`drift.yml`), training on a rented GPU (`train.yml`) |
 
 ## Setup

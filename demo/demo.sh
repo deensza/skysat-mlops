@@ -2,7 +2,7 @@
 # SkySat: the whole demo in one script, in under 5 minutes. Every step runs against the real server, the real
 # registry and GitHub, prints the command it runs and what came back, and waits for Enter before the next one.
 # It shows what the model can do (step 2) and why this is a level 2 MLOps project in small (the other steps).
-# The same demo by hand, command by command: demo/demo.md.
+# The longer live demo with a real training, by hand: demo/demo.md.
 #
 #   bash demo/demo.sh                 the walk-through; about 2 minutes of machine time, the rest is your talking
 #   bash demo/demo.sh --timed         the same, but each pause ends by itself after 12 s: the whole run stays under 5 min
