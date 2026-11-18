@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -141,6 +142,38 @@ def test_new_champion_is_a_new_adapter_on_the_same_base(fake, tmp_path, monkeypa
     assert fake.attach == [("base-model", "v_1", None), ("peft-model", "v_2", "v_1")]
     assert serve.health()["model_version"] == "2"
     assert not (tmp_path / "download-2").exists()  # the downloaded adapter is deleted once in memory
+
+
+def test_a_champion_that_cannot_be_used_leaves_no_download_behind(tmp_path, monkeypatch):
+    """The API asks for the champion again every MODEL_RELOAD_SECONDS, so a version whose files are broken was
+    downloaded into a new folder every minute and none was deleted."""
+    mlflow = pytest.importorskip("mlflow")
+    from llm import train_lora
+    download = tmp_path / "download"
+    monkeypatch.setattr(train_lora.tempfile, "mkdtemp", lambda: download.mkdir() or str(download))
+    client = SimpleNamespace(get_model_version_by_alias=lambda name, alias: SimpleNamespace(version=7, source="x"))
+
+    def files(info):  # what MLflow would put into the folder
+        def fake_download(artifact_uri, dst_path):
+            (Path(dst_path) / "adapter_model.safetensors").write_bytes(b"x")
+            if info:
+                (Path(dst_path) / train_lora.INFO_FILE).write_text(json.dumps(info))
+            return dst_path
+        return fake_download
+
+    monkeypatch.setattr(mlflow.artifacts, "download_artifacts", files(None))  # the info file is missing
+    with pytest.raises(FileNotFoundError):
+        train_lora.champion_adapter(client, serve.BASE_MODEL)
+    assert not download.exists()
+
+    monkeypatch.setattr(mlflow.artifacts, "download_artifacts",
+                        files({"base_model": "another/model", "prompt_version": train_lora.PROMPT_VERSION}))
+    assert train_lora.champion_adapter(client, serve.BASE_MODEL) is None
+    assert not download.exists()
+
+    monkeypatch.setattr(mlflow.artifacts, "download_artifacts",
+                        files({"base_model": serve.BASE_MODEL, "prompt_version": train_lora.PROMPT_VERSION}))
+    assert train_lora.champion_adapter(client, serve.BASE_MODEL) == ("7", str(download))  # kept: the caller loads it
 
 
 def test_a_registry_that_gives_int_versions_still_loads(fake, tmp_path, monkeypatch):

@@ -178,6 +178,12 @@ Set `AUTO_RETRAIN` and `DEPLOY_TO_RUNNER` to `false` (or disable the two workflo
 nothing retrains or redeploys while presenting. If the demo needs them, run them by hand (`gh workflow run train.yml`).
 Enable them again afterwards.
 
+Before you stop a container on purpose (for example `docker compose stop intake` to freeze traffic), pause the
+watchdog with `touch /var/tmp/skysat-watchdog-off`, or it starts the container again within 5 minutes; `rm` the file to
+resume. The server runs a copy of the script, so after a change to `monitoring/watchdog.sh` copy it again with
+`install -m 755 /opt/skysat/monitoring/watchdog.sh /usr/local/bin/skysat-watchdog` (cron line:
+`*/5 * * * * root /usr/local/bin/skysat-watchdog >> /var/log/skysat-watchdog.log 2>&1`).
+
 ## Cost and switching it off
 
 ### What it can cost
@@ -262,8 +268,11 @@ ghcr.io on every push to `main`, and the server is updated by hand with the `az 
 [Switching it on](#switching-it-on), step 1.
 
 The `deploy` job in [ci.yml](../.github/workflows/ci.yml) is written to run on a self-hosted runner on this VM: it
-pulls the image CI just built, restarts the stack and runs the smoke test on the server's own port. Only the
-repository owner can switch it on:
+pulls the image CI just built, restarts the stack and runs the smoke test on the server's own port. That port has no
+login and reaches only the API, so the job's last step checks the public way in
+(`.github/scripts/gateway-test.sh`: the login, the queue's rule, and Grafana reading the prediction log as its
+read-only user). From a PC: `SMOKE_LOGIN="github:$(cat ~/.config/skysat/login-github)" bash
+.github/scripts/gateway-test.sh https://<server>`. Only the repository owner can switch the job on:
 
 1. Settings → Actions → General → *Fork pull request workflows from outside collaborators* → **Require approval for
    all external contributors**. The repo is public: never approve runs from strangers, because their code would run

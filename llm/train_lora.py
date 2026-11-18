@@ -13,6 +13,7 @@ import json
 import math
 import os
 import random
+import shutil
 import subprocess
 import tempfile
 import time
@@ -141,9 +142,15 @@ def champion_adapter(client, base: str) -> tuple[str, str] | None:
         version = client.get_model_version_by_alias(MODEL_NAME, ALIAS)
     except MlflowException:
         return None
-    folder = mlflow.artifacts.download_artifacts(artifact_uri=version.source, dst_path=tempfile.mkdtemp())
-    info = json.loads((Path(folder) / INFO_FILE).read_text())
-    if info["base_model"] != base or info["prompt_version"] != PROMPT_VERSION:
+    download, usable = tempfile.mkdtemp(), False
+    try:
+        folder = mlflow.artifacts.download_artifacts(artifact_uri=version.source, dst_path=download)
+        info = json.loads((Path(folder) / INFO_FILE).read_text())
+        usable = info["base_model"] == base and info["prompt_version"] == PROMPT_VERSION
+    finally:
+        if not usable:  # the API asks again every MODEL_RELOAD_SECONDS: a download nobody uses must not pile up
+            shutil.rmtree(download, ignore_errors=True)
+    if not usable:
         print(f"Champion version {version.version} was tuned for {info}; not comparable, treating as no champion")
         return None
     return str(version.version), folder  # a str everywhere (a local sqlite registry gives an int)
