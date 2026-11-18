@@ -10,8 +10,9 @@
 # If the run promoted a new champion, it closes the open "Drift detected" issue (the drift check opened it): the
 # alarm is answered by the run that fixed it. Any other outcome leaves the issue open.
 # The run ends green only if a version was registered. RunPod answers 403 to this project's API key on the pod-log
-# endpoint, so the launcher reads the outcome from the server (reviews marked trained, serving version); a failed
-# gate, too few reviews and a crash then all end as a failed run. If no GPU type in the list is free, the run fails
+# endpoint, so the launcher reads the outcome from the run's own MLflow run (its `gate` and `registered` tags, the
+# version made from it, whether the champion alias points at it), and only if that has no result from the server
+# (reviews marked trained, serving version); a failed gate, too few reviews and a crash all end as a failed run. If no GPU type in the list is free, the run fails
 # without renting anything.
 # While it runs, each event is a comment on the one open issue "Training runs" (GPU rented, MLflow run started, pod
 # gone, how the run ended), each with a link to this run. The comments are written by the launcher and by the last

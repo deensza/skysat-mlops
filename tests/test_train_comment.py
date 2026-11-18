@@ -184,3 +184,78 @@ def test_the_workflow_sets_the_script_and_comments_the_ending():
     assert "- name: Comment the ending" in train and "steps.summary.outputs.ending" in train
     step = train.split("- name: Comment the ending")[1]
     assert "continue-on-error: true" in step and "timeout-minutes: 2" in step
+
+
+def fake_registry(monkeypatch, run, versions=(), champion=None):
+    """urlopen answering runs/get, model-versions/search and registered-models/alias like DagsHub's MLflow."""
+    import urllib.error
+
+    def urlopen(req, timeout=None):
+        url = req.full_url
+        if "runs/get" in url:
+            body = {"run": run}
+        elif "model-versions/search" in url:
+            assert "run_id%3D%27r1%27" in url  # this run's versions only
+            body = {"model_versions": [{"version": v} for v in versions]}
+        elif "registered-models/alias" in url:
+            if champion is None:
+                raise urllib.error.HTTPError(url, 404, "no alias", {}, None)
+            body = {"model_version": {"version": champion}}
+        else:
+            pytest.fail(f"unexpected request {url}")
+        return io.BytesIO(json.dumps(body).encode())
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "https://mlflow.example.test")
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+
+
+def finished(**tags):
+    return {"info": {"status": "FINISHED"}, "data": {"tags": [{"key": k, "value": v} for k, v in tags.items()]}}
+
+
+LINK = "https://mlflow.example.test/#/experiments/3/runs/r1"
+
+
+def test_outcome_from_mlflow_registered_but_champion_stays(monkeypatch):
+    fake_registry(monkeypatch, finished(gate="passed", registered="true"), versions=["8"], champion="7")
+    assert runpod_pod.outcome_from_mlflow(LINK, log=lambda _: None) == {
+        "exit_code": 0, "registered": True, "version": "8", "promoted": False}
+
+
+def test_outcome_from_mlflow_promoted_when_the_champion_is_this_version(monkeypatch):
+    fake_registry(monkeypatch, finished(gate="passed", registered="true"), versions=["8"], champion="8")
+    assert runpod_pod.outcome_from_mlflow(LINK, log=lambda _: None)["promoted"] is True
+
+
+def test_outcome_from_mlflow_failed_gate_is_a_clean_end_with_nothing_registered(monkeypatch):
+    fake_registry(monkeypatch, finished(gate="failed", registered="false"))
+    assert runpod_pod.outcome_from_mlflow(LINK, log=lambda _: None) == {
+        "exit_code": None, "registered": False, "version": None, "promoted": False}  # a red run, as before
+
+
+@pytest.mark.parametrize("run", [
+    {"info": {"status": "FAILED"}, "data": {"tags": []}},           # the trainer crashed
+    {"info": {"status": "RUNNING"}, "data": {"tags": []}},          # the pod was stopped mid-run
+    finished(gate="passed"),                                         # an old trainer: no `registered` tag
+])
+def test_outcome_from_mlflow_without_a_result_leaves_it_to_the_server(monkeypatch, run):
+    fake_registry(monkeypatch, run)
+    assert runpod_pod.outcome_from_mlflow(LINK, log=lambda _: None) is None
+
+
+def test_outcome_from_mlflow_without_a_link_or_a_server_asks_nothing(monkeypatch):
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: pytest.fail("asked MLflow"))
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "https://mlflow.example.test")
+    assert runpod_pod.outcome_from_mlflow(None) is None
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "file:./mlruns")
+    assert runpod_pod.outcome_from_mlflow(LINK) is None
+
+
+def test_outcome_from_mlflow_that_does_not_answer_leaves_it_to_the_server(monkeypatch):
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "https://mlflow.example.test")
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: (_ for _ in ()).throw(OSError("down")))
+    assert runpod_pod.outcome_from_mlflow(LINK, log=lambda _: None) is None
+
+
+def test_the_gpu_comment_names_the_branch_that_is_trained():
+    source = (ROOT / "llm" / "runpod_pod.py").read_text()
+    assert "clones {branch}" in source and "clones main" not in source

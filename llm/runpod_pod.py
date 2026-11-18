@@ -40,6 +40,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 API = "https://api.runpod.io/v2"
@@ -137,8 +138,8 @@ def launch(gpus=None, branch: str | None = None, trainer_args: str | None = None
             price = f"${PRICES[gpu]:.2f}/h (list price of 2026-11-16)"
         else:
             price = "price unknown"
-        comment(f"A GPU was rented: pod {pod.get('id')}, {gpu}, {price}. The trainer clones main, downloads the base "
-                f"model and trains on the newest ready reviews.", log)
+        comment(f"A GPU was rented: pod {pod.get('id')}, {gpu}, {price}. The trainer clones {branch}, downloads the "
+                f"base model and trains on the newest ready reviews.", log)
         return pod
     raise RuntimeError("No GPU had capacity:\n" + "\n".join(errors))
 
@@ -184,6 +185,49 @@ def mlflow_new_run(since_ms: int) -> str | None:
         _once(print, f"MLflow: could not look for the run ({type(err).__name__}: {err})")
         return None
     return f"{uri}/#/experiments/{experiment_id}/runs/{runs[0]['info']['run_id']}" if runs else None
+
+
+def outcome_from_mlflow(run_url: str | None, log=print) -> dict | None:
+    """When the pod's log could not be read: this run's own result, from its MLflow run (the link mlflow_new_run
+    found). The trainer tags the run `registered` only once it has finished the gate; the version is the registry's
+    version made from this run, promoted if the champion alias points at it. None if there is no run, it has no
+    `registered` tag (it crashed or was stopped before the end) or MLflow did not answer: then the server is asked."""
+    uri = os.environ.get("MLFLOW_TRACKING_URI", "").rstrip("/")
+    if not run_url or not uri.startswith("http"):
+        return None
+    run_id = run_url.rstrip("/").rsplit("/", 1)[-1]
+    login = base64.b64encode(f"{os.environ.get('MLFLOW_TRACKING_USERNAME')}:"
+                             f"{os.environ.get('MLFLOW_TRACKING_PASSWORD')}".encode()).decode()
+
+    def get(path: str) -> dict:
+        req = urllib.request.Request(f"{uri}/api/2.0/mlflow/{path}", headers={"Authorization": f"Basic {login}"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.load(resp)
+
+    try:
+        run = get(f"runs/get?run_id={run_id}")["run"]
+        tags = {t["key"]: t["value"] for t in run.get("data", {}).get("tags", [])}
+        if run["info"].get("status") != "FINISHED" or "registered" not in tags:
+            log(f"MLflow run {run_id} is {run['info'].get('status')} without a result: asking the server instead")
+            return None
+        registered = tags["registered"] == "true"  # green only with a version, as with the server's count
+        out = {"exit_code": 0 if registered else None, "registered": registered, "version": None, "promoted": False}
+        if out["registered"]:
+            found = get("model-versions/search?" + urllib.parse.urlencode({"filter": f"run_id='{run_id}'"}))
+            versions = [v["version"] for v in found.get("model_versions", [])]
+            out["version"] = versions[0] if versions else None
+            try:
+                champion = get("registered-models/alias?" + urllib.parse.urlencode(
+                    {"name": "skysat-reviews", "alias": "champion"}))["model_version"]["version"]
+            except urllib.error.HTTPError:  # no champion yet
+                champion = None
+            out["promoted"] = out["version"] is not None and str(champion) == str(out["version"])
+    except Exception as err:  # the network, or an answer of another shape
+        log(f"MLflow: could not read the run's result ({type(err).__name__}: {err}): asking the server instead")
+        return None
+    log(f"The pod's log could not be read. From the MLflow run {run_id}: gate {tags.get('gate', '?')}, "
+        f"registered {out['registered']}, version {out['version']}, promoted {out['promoted']}")
+    return out
 
 
 def delete(pod_id: str, log=print) -> bool:
@@ -386,8 +430,8 @@ def main() -> int:
     result = follow(pod["id"], args.max_minutes + 5, since_ms=int(started * 1000))
     minutes, seconds = divmod(int(time.time() - started), 60)
     comment(f"The pod is gone: pod {pod['id']} existed {minutes} min {seconds} s.")
-    if result["exit_code"] is None:
-        result = outcome_from_server(before)
+    if result["exit_code"] is None:  # the pod's log was not readable: the run's own MLflow result, else the server's
+        result = outcome_from_mlflow(mlflow_new_run(int(started * 1000))) or outcome_from_server(before)
     print(f"Outcome: {result}")
     if os.environ.get("GITHUB_OUTPUT"):  # for .github/workflows/train.yml
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
