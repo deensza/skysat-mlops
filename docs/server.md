@@ -54,7 +54,9 @@ simulator (a PC) -> POST /reviews -> queue.reviews -> drift.yml -> train.yml -> 
 ```
 
 - **Intake** is always on: every review posted to `/reviews` is queued and sent to the API with its true labels.
-- **The drift check** is [drift.yml](../.github/workflows/drift.yml), scheduled hourly at :35. It reads `GET /model` and
+- **The drift check** is [drift.yml](../.github/workflows/drift.yml), scheduled hourly at :35; since 18 Nov 2026 the
+  server also starts it every 10 minutes from cron (`monitoring/drift-trigger.sh`), because the schedule rarely fires
+  (see [Starting the drift check from the server](#starting-the-drift-check-from-the-server)). It reads `GET /model` and
   `GET /scores/recent?version=N` (aggregates only) and judges only the serving model. On DRIFT it opens one issue
   ("Drift detected: the serving model fell below the gate") and, only if the repository variable `AUTO_RETRAIN` is
   `true`, calls the Train workflow with `--replay 0 --epochs 3` (the new reviews only: after drift the old labels are
@@ -124,6 +126,62 @@ when a drift alarm may rent a GPU, anything else to pause it (for example while 
   registered a version ends green; a run that registered nothing ends red, whether the gate failed, there were too few
   reviews, or the trainer crashed. The summary page of the run says which numbers changed.
 
+### Starting the drift check from the server
+
+GitHub started 2 scheduled runs in 22 hourly slots (see "The hourly schedule" above), so the drift check cannot rely on
+its own clock. The VM has one: [monitoring/drift-trigger.sh](../monitoring/drift-trigger.sh) runs from cron every 10
+minutes and starts `drift.yml` on `main` through the GitHub REST API (`POST .../actions/workflows/drift.yml/dispatches`),
+the same as `gh workflow run drift.yml`.
+
+- **The token** is a classic personal access token (GitHub, Settings, Developer settings, Personal access tokens, Tokens
+  (classic)) with the scopes `repo` and `workflow`, created by a person who can start workflows in
+  `deensza/skysat-mlops` (a fine-grained token cannot be issued for a repository one is only a collaborator on). Make it
+  short-lived (90 days). It goes to the VM only: never into git, an issue or a comment.
+- **Install**, from a PC with `az` (SSH is closed). First the token, from a local file the person made with
+  `(umask 077; printf '%s' '<token>' > ~/.config/skysat/github-dispatch-token)`. Not with `az vm run-command invoke`:
+  the agent on the VM keeps every script it ran, so a token inside a script would stay on the disk. A *managed* run
+  command passes it as a **protected parameter** instead (Azure: "Use ProtectedParameter to pass any sensitive inputs
+  to script such as passwords, keys"; on Linux "Named Parameters and its values are set to environment config", so the
+  script reads `$token`, with `$1` as the fallback should it come as an argument), writes the file, and is deleted
+  again at once:
+
+  ```bash
+  az vm run-command create -g skysat-server --vm-name skysat-server --run-command-name set-dispatch-token --location austriaeast --protected-parameters token="$(cat ~/.config/skysat/github-dispatch-token)" --script 'umask 077; printf "%s" "${token:-$1}" > /opt/skysat/github-dispatch-token && chmod 600 /opt/skysat/github-dispatch-token && echo "written: $(wc -c < /opt/skysat/github-dispatch-token) bytes"' --query "instanceView.output" -o tsv
+  az vm run-command delete -g skysat-server --vm-name skysat-server --run-command-name set-dispatch-token --yes
+  ```
+
+  Expect `written: 40 bytes` (a classic token is 40 characters). What was checked (18 Nov 2026, without running it):
+  `az vm run-command create --help` (az 2.90.0) lists `--protected-parameters` ("Usage: --protected-parameters
+  credentials=somefoo secret=somebar") and `--script`, and Azure's page on managed run commands says the sentences
+  quoted above and that `delete` removes the run command from the VM. Assumed, not checked: that the named protected
+  parameter is exactly `$token` in the script (the page does not name the variable; hence the `$1` fallback), and
+  that nothing of a deleted run command stays on the VM. Still true: the token is in the `az` process's arguments on
+  the PC for the seconds the command runs (the help shows no `@file` form for `--protected-parameters`), and in the
+  shell's history only as the text `$(cat ...)`, not as the value. If `written: 0 bytes` comes back, the parameter
+  did not reach the script by either name: do not fall back to `invoke`; ask on the Azure page which name it uses.
+
+  Then the checkout, the script and the cron entry (no secret in this one, so `invoke` is fine):
+
+  ```bash
+  az vm run-command invoke -g skysat-server -n skysat-server --command-id RunShellScript --scripts 'cd /opt/skysat && git fetch -q origin main && git checkout -q origin/main && install -m 755 monitoring/drift-trigger.sh /usr/local/bin/skysat-drift-trigger && echo "*/10 * * * * root /usr/local/bin/skysat-drift-trigger >> /var/log/skysat-drift-trigger.log 2>&1" > /etc/cron.d/skysat-drift-trigger && chmod 644 /etc/cron.d/skysat-drift-trigger' --query "value[0].message" -o tsv
+  ```
+
+  The cron line is `*/10 * * * * root /usr/local/bin/skysat-drift-trigger >> /var/log/skysat-drift-trigger.log 2>&1`.
+- **Check:** `tail /var/log/skysat-drift-trigger.log` through the same `az vm run-command invoke` shows one line every 10
+  minutes, `<UTC time> dispatch drift.yml: HTTP 204 (ok)`; GitHub, Actions, Drift check lists runs with the event
+  "workflow_dispatch". HTTP 401, 403 or 404 mean the token or its scopes, 422 a disabled workflow or a wrong ref.
+- **Why a run every 10 minutes is safe**, from the files as they are today: `drift.yml` opens an issue only if none with
+  that title is open ("Open an issue on drift", lines 87-96) and has `concurrency: group: drift` (lines 34-35), so runs
+  go one at a time. `train.yml`'s "Cooldown" step (line 119 on) counts the runs of the last `TRAIN_COOLDOWN_HOURS`
+  (default 6; line 94) whose "A GPU was rented" step ran and skips the training otherwise; it reads the last 200 runs
+  (line 141) so that a run every 10 minutes does not push a rental out of the list. `train.yml` has
+  `concurrency: group: train-gpu` (lines 74-76), one run at a time, and its queue check rents nothing with fewer than
+  300 ready reviews (line 172); a call that finds no free GPU rents nothing. The one cost: a drift check that finds
+  drift inside the cooldown does nothing, but the first one after the cooldown rents again, so at most 4 rentals a
+  day, about the limit already in [What it can cost](#what-it-can-cost).
+- **Switch off:** delete the cron entry (the same `az vm run-command invoke` with `--scripts 'rm /etc/cron.d/skysat-drift-trigger'`)
+  or revoke the token on GitHub (the script then logs HTTP 401 every 10 minutes until the entry is removed).
+
 ### Switching it on
 
 1. Merge into `main` and put the new image on the server: **done on 2026-11-16** (`main` runs here with the intake and
@@ -175,7 +233,7 @@ when a drift alarm may rent a GPU, anything else to pause it (for example while 
 
 **Switching it off**: `AUTO_RETRAIN` not `true` (a drift alarm then only opens the issue); `gh workflow disable
 drift.yml` stops the drift check; `DEPLOY_TO_RUNNER` not `true` stops the deploy job; `AUTO_TRAIN=0` (the default)
-stops pods started by the intake. To lock a robot out, delete its line in `gateway-users`.
+stops pods started by the intake; `rm /etc/cron.d/skysat-drift-trigger` on the VM stops the trigger. To lock a robot out, delete its line in `gateway-users`.
 
 ### Before a demo: freeze it
 
@@ -278,17 +336,33 @@ pulls the image CI just built, restarts the stack and runs the smoke test on the
 login and reaches only the API, so the job's last step checks the public way in
 (`.github/scripts/gateway-test.sh`: the login, the queue's rule, and Grafana reading the prediction log as its
 read-only user). From a PC: `SMOKE_LOGIN="github:$(cat ~/.config/skysat/login-github)" bash
-.github/scripts/gateway-test.sh https://<server>`. Only the repository owner can switch the job on:
+.github/scripts/gateway-test.sh https://<server>`. Only the repository owner can switch the job on: steps 1, 2 and 4
+need a repository admin (Deniz, `deensza`), because a collaborator cannot see Settings or Runners.
 
 1. Settings → Actions → General → *Fork pull request workflows from outside collaborators* → **Require approval for
    all external contributors**. The repo is public: never approve runs from strangers, because their code would run
    on this server, which holds the DagsHub token.
-2. Settings → Actions → Runners → **New self-hosted runner**, Linux x64: copy the token from the page (valid 1 hour).
-3. On the VM, as user `skysat`, install the runner with the label `skysat`, and start it as a service.
+2. Settings → Actions → Runners → **New self-hosted runner**, Linux x64: copy the token from the page (valid 1 hour)
+   and the version number it shows.
+3. On the VM, through the same `az vm run-command invoke` as in [Switching it on](#switching-it-on) step 1 (it runs as
+   root, so the runner's own files are made as user `skysat` with `sudo -u skysat`), with `<version>` and
+   `<token from the page>` taken from the page of step 2 (the runner refuses to be configured as root):
+
+   ```bash
+   mkdir -p /opt/actions-runner && chown skysat /opt/actions-runner && cd /opt/actions-runner
+   sudo -u skysat bash -c 'curl -o actions-runner-linux-x64.tar.gz -L https://github.com/actions/runner/releases/download/v<version>/actions-runner-linux-x64-<version>.tar.gz && tar xzf actions-runner-linux-x64.tar.gz && ./config.sh --url https://github.com/deensza/skysat-mlops --token <token from the page> --labels skysat --unattended --name skysat-server'
+   ./svc.sh install skysat && ./svc.sh start
+   ```
+
+   The user `skysat` must be in the `docker` group (`usermod -aG docker skysat`), and `/opt/skysat/.env` (mode 600,
+   the job's `COMPOSE_ENV_FILES`) must be readable by it: `chown skysat /opt/skysat/.env`. These lines were written
+   from GitHub's runner page and have not been run on this VM.
 4. Settings → Secrets and variables → Actions → Variables: `DEPLOY_TO_RUNNER` = `true`.
 
 The deploy job remembers the image that was running and goes back to it if the smoke test fails (only the image: the
-compose and gateway files stay as they are). The rollback has not been tried on the server.
+compose and gateway files stay as they are). The image it goes back to is the name `docker inspect` reports for the running container, which on this server is
+`ghcr.io/deensza/skysat-mlops-api:latest`, so the rollback returns to whatever the local `latest` tag was. It has not
+been tried on the server.
 
 A runner uses memory on a VM and is the one thing that runs outside code here, so stop it when it is not needed.
 

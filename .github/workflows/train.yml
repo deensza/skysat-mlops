@@ -13,6 +13,9 @@
 # endpoint, so the launcher reads the outcome from the server (reviews marked trained, serving version); a failed
 # gate, too few reviews and a crash then all end as a failed run. If no GPU type in the list is free, the run fails
 # without renting anything.
+# While it runs, each event is a comment on the one open issue "Training runs" (GPU rented, MLflow run started, pod
+# gone, how the run ended), each with a link to this run. The comments are written by the launcher and by the last
+# step, never by the pod: the GitHub token does not reach it. A comment that fails never fails or slows the run.
 #
 # By hand: Actions -> Train -> Run workflow (reason and trainer arguments are optional), or `gh workflow run train.yml`.
 # Called by drift.yml when the repository variable AUTO_RETRAIN is `true`.
@@ -29,7 +32,7 @@ on:
         description: Why this run starts (shown on the summary page; "by hand" skips the cooldown)
         default: by hand
       trainer_args:
-        description: Extra arguments for the trainer (optional)
+        description: Extra arguments for the trainer (optional; for example --max-train-seconds 60 to cut the training part short)
         default: ""
   workflow_call:
     inputs:
@@ -56,7 +59,7 @@ on:
 permissions:
   contents: read
   actions: read  # gh run list (the cooldown)
-  issues: write  # to close the "Drift detected" issue after a promotion
+  issues: write  # to close the "Drift detected" issue after a promotion, and to comment on "Training runs"
 
 concurrency:
   group: train
@@ -87,6 +90,7 @@ jobs:
       MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
+      COMMENT_SCRIPT: .github/scripts/train-comment.sh  # make train-remote leaves it unset and comments nothing
       COOLDOWN_HOURS: ${{ vars.TRAIN_COOLDOWN_HOURS || '6' }}
       REASON: ${{ inputs.reason }}
       TRAINER_ARGS: ${{ inputs.trainer_args }}
@@ -110,6 +114,8 @@ jobs:
       # and whether it was started here or as a job of the drift check. Runs that were skipped or found no free GPU
       # do not count, or the cooldown would never end.
       # If the history cannot be read, nothing is rented.
+      # The list holds 200 runs because the drift check may soon be started every 10 minutes from the server
+      # (monitoring/drift-trigger.sh): 60 runs would not reach back 6 hours, and a rental could fall off the list.
       - name: Cooldown
         id: cooldown
         if: env.REASON != 'by hand'
@@ -132,7 +138,7 @@ jobs:
           hours = float(os.environ["COOLDOWN_HOURS"])
           since = datetime.now(timezone.utc) - timedelta(hours=hours)
           try:
-              runs = gh("run", "list", "--limit", "60", "--json", "databaseId,createdAt,workflowName")
+              runs = gh("run", "list", "--limit", "200", "--json", "databaseId,createdAt,workflowName")
               for run in runs:
                   created = datetime.fromisoformat(run["createdAt"].replace("Z", "+00:00"))
                   if (str(run["databaseId"]) == os.environ["GITHUB_RUN_ID"] or created < since
@@ -175,7 +181,7 @@ jobs:
       - name: Train on a rented GPU
         id: train
         if: steps.cooldown.outputs.skip != 'true' && steps.before.outputs.skip != 'true'
-        run: python3 -u -m llm.runpod_pod --wait --branch main --max-minutes 45 --trainer-args="$TRAINER_ARGS"
+        run: python3 -u -m llm.runpod_pod --wait --branch "$GITHUB_REF_NAME" --max-minutes 45 --trainer-args="$TRAINER_ARGS"
 
       # The cooldown of later runs looks for this step: it runs only if a pod was really created.
       - name: A GPU was rented
@@ -197,8 +203,10 @@ jobs:
         run: bash .github/scripts/close-drift-issue.sh "$VERSION" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
       - name: Summary
+        id: summary
         if: always()
         env:
+          T_POD: ${{ steps.train.outputs.pod_id }}
           COOLDOWN_SKIP: ${{ steps.cooldown.outputs.skip }}
           BEFORE_SKIP: ${{ steps.before.outputs.skip }}
           BEFORE_PENDING: ${{ steps.before.outputs.pending }}
@@ -230,18 +238,32 @@ jobs:
           if note:
               print(note + "\n")
           if e("COOLDOWN_SKIP") == "true":
-              print("Skipped by the cooldown (the reason is above): no pod was started.")
+              ending = "Skipped by the cooldown (the reason is above): no pod was started."
           elif e("BEFORE_SKIP") == "true":
-              print("Skipped because there are too few new reviews (300 are needed): no pod was started.")
+              ending = "Skipped because there are too few new reviews (300 are needed): no pod was started."
           elif e("T_REGISTERED") == "true" and e("T_PROMOTED") == "true":
-              print("A new version was registered and promoted: the server loads it within a minute.")
+              ending = "A new version was registered and promoted: the server loads it within a minute."
           elif e("T_REGISTERED") == "true":
-              print("A new version was registered but the champion stays: it did not beat it on the same reviews.")
+              ending = "A new version was registered but the champion stays: it did not beat it on the same reviews."
           elif e("T_REGISTERED") == "false":
-              print("Nothing was registered: the gate failed, there were too few reviews, or the trainer crashed. "
-                    "The batch went back to pending.")
+              ending = ("Nothing was registered: the gate failed, there were too few reviews, or the trainer crashed. "
+                        "The batch went back to pending.")
+          elif e("T_STARTED") == "true" and e("T_POD") == "-":  # the step ran and no pod was ever created
+              ending = "No GPU type in the list was free: nothing was rented and nothing was trained."
           elif e("T_STARTED") == "true":
-              print("The outcome is unknown: neither the pod's log nor the server could be read.")
+              ending = "The outcome is unknown: neither the pod's log nor the server could be read."
           else:
-              print("No pod was started.")
+              ending = "No pod was started."
+          print(ending)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:  # for the comment on the "Training runs" issue
+              f.write(f"ending={ending}\n")
           PY
+
+      # The last event of the run on the "Training runs" issue; a comment that fails must not turn a run red or slow it.
+      - name: Comment the ending
+        if: always() && steps.settings.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          ENDING: ${{ steps.summary.outputs.ending }}
+        run: bash .github/scripts/train-comment.sh "${ENDING:-The run ended without a summary line.}"

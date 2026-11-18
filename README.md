@@ -120,7 +120,9 @@ are set since 17 Nov 2026, and the repository variable `AUTO_RETRAIN` switches i
 a GPU. The chain has run end to end, first on 17 Nov 2026: a drift alarm called the Train workflow, which rented a
 GPU, trained, and promoted a new version that the server then loaded. Each of those drift checks was started by hand:
 GitHub's hourly schedule fires only now and then, and its first two runs (21:53 UTC on 17 Nov, 03:49 UTC on 18 Nov)
-met a switched-off server.
+met a switched-off server. Since 18 Nov the server can start the drift check itself every 10 minutes
+(`monitoring/drift-trigger.sh` from cron, through GitHub's API; it needs a token a person creates, see
+[docs/server.md](docs/server.md#starting-the-drift-check-from-the-server)).
 The deploy job is still off (no self-hosted runner, `DEPLOY_TO_RUNNER` unset): the server is updated by hand with
 `az vm run-command`. What a real level 2 system has that this one does not:
 [docs/architecture.md](docs/architecture.md#mlops-level).
@@ -136,6 +138,7 @@ What changes with every run is not repeated on this page:
 | Every drift check and training run | [GitHub Actions](https://github.com/deensza/skysat-mlops/actions): workflows Drift check and Train; each run's summary page has the numbers |
 | Whether a drift alarm may rent a GPU | the repository variable `AUTO_RETRAIN` |
 | Drift alarms | issues titled "Drift detected"; the training run that promotes a new version closes its alarm |
+| What a training run is doing right now | the one open issue "Training runs" (one comment per event, each linking its run), and the run's page in MLflow on DagsHub, which exists from the trainer's first minute with the training loss every 25 steps |
 
 ## Pipeline
 
@@ -147,6 +150,6 @@ What changes with every run is not repeated on this page:
 | Monitor | `llm_scores` table → Grafana; `GET /scores/recent?hours=N` returns aggregates only |
 | Drift | `llm/drift_check.py`: DRIFT if the live MAE of the serving model > 1.0 or its recommended accuracy < 0.90 by more than the sampling noise, on >= 100 labelled requests |
 | CI/CD | `ci.yml`: tests (including `tests/test_pipeline.py`), `nginx -t`, compose check, image build; on pushes to main the image goes to ghcr.io. The deploy job (rollback to the running image if the smoke test fails) is written but off: no self-hosted runner, `DEPLOY_TO_RUNNER` unset. It ran once, on 13 Nov 2026 (run 43416289152), and has been off since; the version with the rollback has never run. The server is updated by hand |
-| Retrain | `train.yml`: started by `drift.yml` (only if `AUTO_RETRAIN` is `true`) or by hand; cooldown, needs >= 300 `ready` reviews (pending and already scored by the model as live traffic), rents a RunPod GPU for at most 45 minutes, then checks no pod is left; a run that promotes a new version closes the drift issue. It has trained on RunPod started by hand and started by the drift check ([docs/llm.md](docs/llm.md#what-ran-on-runpod-17-nov-2026)). Also `make train-remote` |
+| Retrain | `train.yml`: started by `drift.yml` (only if `AUTO_RETRAIN` is `true`) or by hand; cooldown, needs >= 300 `ready` reviews (pending and already scored by the model as live traffic), rents a RunPod GPU for at most 45 minutes, then checks no pod is left; a run that promotes a new version closes the drift issue. While it runs it writes one comment per event on the issue "Training runs" (the GPU and its price, the MLflow run's link, the pod gone, how it ended); the trainer's own extra argument `--max-train-seconds N` cuts the training part short. It has trained on RunPod started by hand and started by the drift check ([docs/llm.md](docs/llm.md#what-ran-on-runpod-17-nov-2026)). Also `make train-remote` |
 
 See [docs/architecture.md](docs/architecture.md) for the picture and [docs/server.md](docs/server.md) for the always-on server.

@@ -83,6 +83,29 @@ row shares its text with a gate row. A fresh LoRA adapter is trained on the froz
 on the same gate reviews, logs to MLflow, registers the version if it passes, and makes it the champion if its
 `combined` beats the champion's. Fewer than `--min-new` (300) new reviews: nothing is trained.
 
+The MLflow run exists from the trainer's first minute, not from its end: `run()` starts it before the base model is
+loaded, logs the parameters and the git commit at once, logs the training loss as the metric `train_loss` every 25
+steps (one network call per 25 steps, not per step; a call that fails is one line in the log and the training goes
+on), and after the gate adds the gate metrics, `train_seconds`, the champion's `combined` and the adapter. The tags
+`gate` (`passed` or `failed`) and `registered` say how it ended; a failed gate ends the run normally with nothing
+registered. On DagsHub a run can therefore be watched while the pod trains. Measured on 18 Nov 2026 on this PC (RTX
+4070 Laptop, local sqlite MLflow, 300 training reviews, 150 steps in 44 s): 45 s after the start the run was
+`RUNNING` with the git commit, `n_train` and the device logged and 4 points of `train_loss`; it ended `FINISHED`
+with 6 points (every 25 steps and the last).
+
+`--max-train-seconds N` stops the training loop after N seconds and goes on to the gate and the registration as
+usual; MLflow gets `train_cut` (`true`/`false`, as a parameter and a tag), `train_steps_done` and
+`train_steps_planned`. Honest note: the training part is only 80-92 s of a 6.5-10 min pod run (the rest is renting,
+booting, the 3 GB base model download and the gate), so this saves at most about a minute, and a cut adapter is an
+undertrained one (the learning rate had not decayed yet). It is for a demo that must end on time, not for a better
+model. From the Train workflow it goes into the `trainer_args` input, for example `--max-train-seconds 60`. Measured
+on this PC on 18 Nov 2026 with the same 300 reviews and `--max-train-seconds 15`, three times: "Training cut after
+53 of 150 steps", then 50 and 42 (the step reached depends on the GPU's speed), each run ending `FINISHED` with
+`train_cut` `true` and `train_steps_done` as printed; the gate (20 reviews, a test of the logging, not of the model)
+failed in the real runs and nothing was registered. The registration after a cut was shown only with `gate.passes`
+forced to pass inside a scratch process (`llm/gate.py` unchanged): version 1 in a local sqlite registry, alias left
+alone with `--no-promote`.
+
 ## The gate and what it measured
 
 `llm/gate.py` parses the three lines: `score_mae` (a malformed score counts as 9), `score_within1`,
@@ -176,6 +199,14 @@ outcome from the server: it reads `/queue/stats` and `/model` before and after. 
 version was registered (exit code 0); a new serving version means it was promoted. Without the log a failed gate, too
 few reviews and a crash look the same: nothing was registered, and the run ends as failed. The trainer's own lines
 (gate numbers, training time) are then only in MLflow.
+
+Inside the Train workflow the launcher also writes what it knows on the one open GitHub issue "Training runs"
+(`.github/scripts/train-comment.sh`; the issue is made if none is open, never a second one): the pod with its GPU type
+and price per hour as soon as it exists (the `cost` RunPod reports, else the list price above), the link of the
+trainer's MLflow run as soon as DagsHub lists one that started after the pod (the launcher asks MLflow's REST API
+about every 20 s, since the pod's log cannot be read), the pod gone with how long it existed, and the ending (the
+summary page's last line). The pod never gets the GitHub token, and a comment that cannot be posted is one line in
+the launcher's log. `make train-remote` from a PC posts nothing.
 
 If no GPU type in the list is free, the launcher stops with "No GPU had capacity": nothing is rented and nothing is
 billed. The Train workflow then fails without its "A GPU was rented" step, so the cooldown does not start and the next

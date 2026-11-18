@@ -9,6 +9,7 @@ MLflow gets parameters, metrics and the adapter. It never gets reviews, prompts 
 (DbCL-1.0) is not ours to redistribute and the shared MLflow is public.
 """
 
+import contextlib
 import json
 import math
 import os
@@ -71,8 +72,10 @@ def load_model(base: str, device: str):
     return tok, model, dtype
 
 
-def train(model, tok, examples: pd.DataFrame, args, dtype):
-    """LoRA-tune model on the examples; returns (the peft model, per-step losses)."""
+def train(model, tok, examples: pd.DataFrame, args, dtype, log_loss=None):
+    """LoRA-tune model on the examples; returns (the peft model, per-step losses, info about the steps done).
+    log_loss(step, mean loss of the last 25 steps) is called every 25 steps, so a network call is about once per 25 steps.
+    With args.max_train_seconds the loops stop once that time has passed (info["cut"])."""
     import torch
     from peft import LoraConfig, get_peft_model
     # recompute activations in the backward pass: fits 8 GB cards (the cheapest RunPod GPU) at ~30% more time
@@ -91,7 +94,9 @@ def train(model, tok, examples: pd.DataFrame, args, dtype):
     scaler = torch.amp.GradScaler(enabled=dtype == torch.float16)
     pad = tok.pad_token_id
     rng = random.Random(args.seed)
-    losses, step = [], 0
+    limit = getattr(args, "max_train_seconds", None)
+    started = time.time()
+    losses, step, cut = [], 0, False
     model.train()
     for _ in range(args.epochs):
         order = list(range(len(data)))
@@ -114,9 +119,19 @@ def train(model, tok, examples: pd.DataFrame, args, dtype):
             losses.append(loss.item())
             step += 1
             if step % 25 == 0 or step == steps:
-                print(f"step {step}/{steps}  loss {sum(losses[-25:]) / len(losses[-25:]):.4f}", flush=True)
+                mean_loss = sum(losses[-25:]) / len(losses[-25:])
+                print(f"step {step}/{steps}  loss {mean_loss:.4f}", flush=True)
+                if log_loss is not None:
+                    log_loss(step, mean_loss)
+            elapsed = time.time() - started
+            if limit is not None and elapsed > limit:
+                print(f"Training cut after {step} of {steps} steps ({elapsed:.0f} s > --max-train-seconds {limit:g})")
+                cut = True
+                break
+        if cut:
+            break
     model.eval()
-    return model, losses
+    return model, losses, {"steps_done": step, "steps_planned": steps, "cut": cut}
 
 
 def generate(model, tok, prompts: list[str], batch: int = 16, max_new_tokens: int = MAX_NEW_TOKENS) -> list[str]:
@@ -177,49 +192,66 @@ def run(train_rows: pd.DataFrame, eval_rows: pd.DataFrame, args, params: dict | 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if device == "cpu":
         print("WARNING: no GPU found; this will be very slow")
-    tok, model, dtype = load_model(args.base, device)
-
-    t0 = time.time()
-    model, losses = train(model, tok, train_rows, args, dtype)
-    train_seconds = time.time() - t0
-    t0 = time.time()
-    metrics = gate.score(eval_rows, generate(model, tok, eval_rows["prompt"].tolist()))
-    print(f"New adapter (trained on {len(train_rows)} reviews in {train_seconds:.0f} s, gate {time.time() - t0:.0f} s):")
-    print(gate.report(metrics))
-
-    args.out.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(args.out)
-    info = {"base_model": args.base, "prompt_version": PROMPT_VERSION, "split": (params or {}).get("batch_id", "local")}
-    (args.out / INFO_FILE).write_text(json.dumps(info, indent=2))
-    print(f"Adapter saved to {args.out} ({sum(f.stat().st_size for f in args.out.iterdir()) / 1e6:.0f} MB)")
-    result = {"metrics": metrics, "registered": False, "version": None, "promoted": False, "champion_combined": None}
     if args.no_mlflow:
-        return result
+        run_ctx = contextlib.nullcontext()
+    else:
+        import mlflow
+        mlflow.set_experiment(EXPERIMENT)
+        run_ctx = mlflow.start_run()  # before the model download and the training, so the run is visible from the first minute
+    with run_ctx as run_:
+        if not args.no_mlflow:
+            mlflow.set_tag("git_commit", git_commit())
+            mlflow.log_params({k: str(v) for k, v in vars(args).items() if k not in ("no_mlflow", "queue_url")}
+                              | {"prompt_version": PROMPT_VERSION, "n_train": len(train_rows), "n_gate": len(eval_rows),
+                                 "device": torch.cuda.get_device_name() if device == "cuda" else "cpu"}
+                              | {k: str(v) for k, v in (params or {}).items()})
+        tok, model, dtype = load_model(args.base, device)
 
-    import mlflow
-    client = mlflow.MlflowClient()
-    print(f"MLflow: {mlflow.get_tracking_uri()}")
-    champion = champion_adapter(client, args.base)
-    if champion is not None:
-        champion_metrics = score_adapter(model, tok, champion[1], "champion", eval_rows)
-        result["champion_combined"] = champion_metrics["combined"]
-        print(f"Champion (version {champion[0]}) on the same reviews:\n{gate.report(champion_metrics)}")
-    champion_score = result["champion_combined"]
+        t0 = time.time()
+        def log_loss(step, loss):  # a metric that cannot be sent is one line in the log, never the end of the training
+            try:
+                mlflow.log_metric("train_loss", loss, step=step)
+            except Exception as err:
+                print(f"MLflow: train_loss at step {step} not logged ({type(err).__name__})", flush=True)
+        if args.no_mlflow:
+            log_loss = None
+        model, losses, info_train = train(model, tok, train_rows, args, dtype, log_loss)
+        train_seconds = time.time() - t0
+        t0 = time.time()
+        metrics = gate.score(eval_rows, generate(model, tok, eval_rows["prompt"].tolist()))
+        print(f"New adapter (trained on {len(train_rows)} reviews in {train_seconds:.0f} s, gate {time.time() - t0:.0f} s):")
+        print(gate.report(metrics))
 
-    mlflow.set_experiment(EXPERIMENT)
-    with mlflow.start_run() as run_:
-        mlflow.set_tag("git_commit", git_commit())
-        mlflow.log_params({k: str(v) for k, v in vars(args).items() if k not in ("no_mlflow", "queue_url")}
-                          | {"prompt_version": PROMPT_VERSION, "n_train": len(train_rows), "n_gate": len(eval_rows),
-                             "device": torch.cuda.get_device_name() if device == "cuda" else "cpu"}
-                          | {k: str(v) for k, v in (params or {}).items()})
+        args.out.mkdir(parents=True, exist_ok=True)
+        model.save_pretrained(args.out)
+        info = {"base_model": args.base, "prompt_version": PROMPT_VERSION, "split": (params or {}).get("batch_id", "local")}
+        (args.out / INFO_FILE).write_text(json.dumps(info, indent=2))
+        print(f"Adapter saved to {args.out} ({sum(f.stat().st_size for f in args.out.iterdir()) / 1e6:.0f} MB)")
+        result = {"metrics": metrics, "registered": False, "version": None, "promoted": False, "champion_combined": None}
+        if args.no_mlflow:
+            return result
+
+        client = mlflow.MlflowClient()
+        print(f"MLflow: {mlflow.get_tracking_uri()}")
+        mlflow.log_params({"train_cut": str(info_train["cut"]).lower(), "train_steps_done": info_train["steps_done"],
+                           "train_steps_planned": info_train["steps_planned"]})
+        mlflow.set_tag("train_cut", str(info_train["cut"]).lower())
+        champion = champion_adapter(client, args.base)
+        if champion is not None:
+            champion_metrics = score_adapter(model, tok, champion[1], "champion", eval_rows)
+            result["champion_combined"] = champion_metrics["combined"]
+            print(f"Champion (version {champion[0]}) on the same reviews:\n{gate.report(champion_metrics)}")
+        champion_score = result["champion_combined"]
+
         mlflow.log_metrics({k: v for k, v in metrics.items() if not (isinstance(v, float) and math.isnan(v))}
                            | {"train_loss_last50": sum(losses[-50:]) / len(losses[-50:]), "train_seconds": train_seconds})
         if champion_score is not None:
             mlflow.log_metric("champion_combined", champion_score)
         mlflow.log_artifacts(str(args.out), "adapter")
 
+        mlflow.set_tag("gate", "passed" if gate.passes(metrics) else "failed")
         if not gate.passes(metrics):
+            mlflow.set_tag("registered", "false")
             print("Not registered: the gate failed (limits are in llm/gate.py)")
             return result
         try:
@@ -229,6 +261,7 @@ def run(train_rows: pd.DataFrame, eval_rows: pd.DataFrame, args, params: dict | 
         version = client.create_model_version(MODEL_NAME, source=f"{run_.info.artifact_uri}/adapter",
                                               run_id=run_.info.run_id)
         result.update(registered=True, version=version.version)
+        mlflow.set_tag("registered", "true")
         print(f"Registered {MODEL_NAME} version {version.version}")
         beats = champion_score is None or metrics["combined"] > champion_score
         if args.no_promote:
