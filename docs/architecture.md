@@ -8,8 +8,9 @@ An airline gets thousands of free-text reviews. SkySat reads one and answers: sc
 complaint. The model is one LoRA adapter on a frozen 1.5B LLM. Passengers' reviews (simulated from the 128k dataset)
 arrive at the server's **intake** and wait in a **queue**. A **trainer** on a rented **RunPod GPU** takes batches from
 the queue, trains, gates, and registers in **MLflow**. The API serves the **champion**, logs every answer to
-**PostgreSQL**, **Grafana** shows it, **drift** is checked on the live reviews' true labels. **CI/CD** tests and
-deploys; a drift alarm can start the training by itself (built, not yet switched on).
+**PostgreSQL**, **Grafana** shows it, **drift** is checked on the live reviews' true labels. **CI** tests the code
+and builds the image; a drift alarm starts the training by itself (switched on since 17 Nov 2026; how far it has got
+is in [section 6](#6-ci-cd-and-the-schedule)). The deploy job is written but off: the server is updated by hand.
 
 ## 2. The big picture
 
@@ -27,7 +28,7 @@ flowchart LR
     pod["RunPod pod<br/>llm/trainer.py<br/>deletes itself"]
     mlflow[("MLflow (DagsHub)<br/>skysat-reviews@champion")]
     subgraph GH["GitHub (no GPU)"]
-        ci["ci.yml<br/>tests, image, deploy"]
+        ci["ci.yml<br/>tests, image, deploy (off)"]
         drift["drift.yml<br/>drift check, issue"]
         train["train.yml<br/>cooldown, queue check, rents the pod"]
     end
@@ -40,7 +41,7 @@ flowchart LR
     drift -- "GET /scores/recent, GET /model" --> nginx
     drift -- "DRIFT and AUTO_RETRAIN=true" --> train
     train -- "llm.runpod_pod --wait" --> pod
-    ci -- "image, rolls back if the smoke test fails" --> SRV
+    ci -. "image (the deploy job is off)" .-> SRV
 ```
 
 Ideas that hold it together:
@@ -65,18 +66,22 @@ Google's "MLOps: Continuous delivery and automation pipelines in machine learnin
 |---|---|---|
 | 0, manual | Every step by hand: data, training, hand-over to the people who deploy | Not here: the steps are scripts and workflows |
 | 1, ML pipeline automation | Training is a pipeline that runs by itself on new data (continuous training), with a gate and a registry | Queue (`llm/queue_db.py`) -> `llm/trainer.py` -> `llm/gate.py` -> MLflow registry, started by `train.yml` |
-| 2, CI/CD pipeline automation | The pipeline's own code is built, tested and deployed automatically, and the loop runs without a person | `ci.yml` (tests, image, deploy with rollback) and `drift.yml` -> `train.yml` |
+| 2, CI/CD pipeline automation | The pipeline's own code is built, tested and deployed automatically, and the loop runs without a person | `ci.yml` (tests and image run; the deploy job with rollback is written but off) and `drift.yml` -> `train.yml` (on since 17 Nov 2026) |
 
 What makes it level 2 here:
 
-- A code change goes through tests (`tests/`, `nginx -t`), an image on ghcr.io, and a deploy on the server; if the smoke
-  test fails the deploy job goes back to the image that was running.
+- A code change goes through tests (`tests/`, `nginx -t`) and an image on ghcr.io. The deploy job (pull on the server,
+  smoke test, back to the image that was running if it fails) ran once, on 13 Nov 2026 (run 43416289152), and is off
+  since: there is no self-hosted runner and `DEPLOY_TO_RUNNER` is unset. The version with the rollback has never run.
+  The server is updated by hand with `az vm run-command`
+  ([server.md](server.md#switching-it-on)).
 - Drift starts the training: `drift.yml` checks the serving model, opens an issue and, if `AUTO_RETRAIN` is `true`,
   calls `train.yml`, which rents a RunPod pod, trains, gates, and registers in MLflow. The API loads the new champion
   by itself.
 - The pipeline itself is tested in CI: `tests/test_pipeline.py` runs the real trainer against a real PostgreSQL with
   only the GPU training replaced by a stub, and checks the queue's state afterwards.
-- Cost is bounded: a cooldown, a check that at least 300 reviews are pending, a 45 minute limit per pod, and a sweep
+- Cost is bounded: a cooldown, a check that at least 300 reviews are `ready` (pending and already scored by the model
+  as live traffic), a 45 minute limit per pod (at most about $0.26 at the dearest GPU type in the list), and a sweep
   that fails the run if a pod is left.
 
 What a real level 2 system has that this one does not:
@@ -84,8 +89,11 @@ What a real level 2 system has that this one does not:
 - No orchestrator such as Kubeflow or Airflow: GitHub Actions plays that part.
 - No feature store, and data validation is only the intake's request checks.
 - One small server and no staging environment: the new image goes straight to the only server.
-- The loop is built but must be switched on by the repository owner ([server.md](server.md)); it has not run on GitHub
-  yet.
+- The deploy step is done by hand: the deploy job is off.
+- The loop is young: switched on on 17 Nov 2026.
+  That day the chain ran end to end once: a drift alarm called the Train workflow, which rented a GPU, trained, and
+  promoted version 6. Each drift check of that day was started by hand: GitHub's hourly schedule had not started one by 17:35 UTC.
+  Two scheduled runs came later (21:53 UTC on 17 Nov, 03:49 UTC on 18 Nov); both failed because the server was off.
 
 ## 3. The services (docker-compose.yml)
 
@@ -105,15 +113,20 @@ the read-only Grafana database user and the restart policies ([server.md](server
 ## 4. Life of a model
 
 1. `make simulate-seed N=2000`: 2,000 reviews flown <= 2018 go into the queue (not sent as live traffic).
-2. `make train-remote` (RunPod, RTX 3070 at $0.13/h) or `make llm-train` (this PC): the trainer claims the newest pending
-   reviews, keeps 10% back for the gate, and LoRA-tunes on the rest (1,800 reviews, 322 s on an RTX 4070 Laptop).
-3. The gate (`llm/gate.py`): MAE <= 1.0, recommended >= 0.90, complaint >= 0.65. v1 from the queue: 0.88, 92.0%, 71.5%.
+2. The Train workflow or `make train-remote` (RunPod, RTX 3070 at $0.13/h) or `make llm-train` (this PC): the trainer
+   claims the newest pending reviews that the model has already scored (training-only reviews count as scored), keeps
+   10% back for the gate, and LoRA-tunes on the rest (1,800 reviews, 322 s on an RTX 4070 Laptop).
+3. The gate (`llm/gate.py`): MAE <= 1.0, recommended >= 0.90, complaint >= 0.65. v1 from the queue (local run of 16 Nov; the server's version 1 is another run, see
+   [llm.md](llm.md#the-gate-and-what-it-measured)): 0.88, 92.0%, 71.5%.
 4. Logged to MLflow (parameters, metrics, the 17 MB adapter), registered as `skysat-reviews`; it becomes `champion` if
    no champion exists or it beats the champion on the same gate reviews (`combined`). The batch is marked trained if a
    version was registered; if the gate fails it goes back to pending.
 5. The API sees the new alias within `MODEL_RELOAD_SECONDS`, loads the adapter, deletes the old one.
 6. Drift: `make simulate ... SCENARIO=harsh` sends reviews a harsher survey scored; the live MAE rises past the gate,
-   and the next batch (those newest reviews) trains a v2 that beats v1 on them.
+   and the next batch (those newest reviews, once scored, trained with `--replay 0 --epochs 3`) gives an adapter that
+   beats the champion on them. On the server that was version 4 (17 Nov 2026, started by hand) and then version 6
+   (the same day, started by the drift check). About two hours later the alias was moved back to version 1 by
+   hand. See [llm.md](llm.md#the-gate-and-what-it-measured).
 
 ## 5. Life of a request
 
@@ -124,13 +137,21 @@ Malformed answers are `null` fields and count as wrong in the live measures.
 
 ## 6. CI, CD and the schedule
 
-All three workflows are code and configuration only: none has run on GitHub yet.
+What has run, as of 17 Nov 2026: `ci.yml` on every pull request and push to `main` (tests and image; its
+deploy job once, on 13 Nov 2026); `drift.yml` by hand; `train.yml` by hand three times, each renting a RunPod GPU, and as a job of the drift
+check.
+The drift check called `train.yml` four times on 17 Nov: three times no GPU was free and nothing was
+rented; the fourth time (15:09 UTC) it rented an RTX 3080 Ti, trained, and promoted version 6
+([server.md](server.md#what-has-run-17-nov-2026)). Scheduled runs of `drift.yml` came later (21:53 UTC on 17 Nov, 03:49 UTC on 18 Nov); both failed because the server was
+off. Not seen yet: a scheduled check that reaches the server.
 
 - `ci.yml`: pytest (no torch; the queue's SQL and `tests/test_pipeline.py` against a PostgreSQL service), `nginx -t` on
-  both gateway configs, `docker compose config` for both compose files, build the `llm/Dockerfile` image. On `main` it
-  is pushed to ghcr.io and, if the server's runner and `DEPLOY_TO_RUNNER` are set, deployed and smoke-tested. The
-  deploy job remembers the running image and rolls back to it if the smoke test fails (only the image, not the compose
-  or gateway files). It does not set the `MLFLOW_*` values itself. It never runs for pull requests.
+  both gateway configs, `docker compose config` for both compose files, build the `llm/Dockerfile` image. It runs for
+  pushes and pull requests to `main`. On a push to `main` the image is pushed to ghcr.io and, if the server's runner
+  and `DEPLOY_TO_RUNNER` are set, deployed and smoke-tested. Neither is set now. The deploy job ran once, on 13 Nov
+  2026 (run 43416289152), and is skipped since: the server is updated by hand with `az vm run-command`
+  ([server.md](server.md#switching-it-on)). As written, the deploy job remembers the running image and rolls back to it
+  if the smoke test fails (only the image, not the compose or gateway files); that version has never run. It does not set the `MLFLOW_*` values itself. It never runs for pull requests.
 - `drift.yml`: scheduled hourly at :35. `llm/drift_check.py` asks `/model` which version is serving and judges only that
   version's answers in `/scores/recent?version=N` (`--all-versions` counts all): after a promotion the old model's
   answers no longer count, so a problem that is already fixed does not ask for another retraining. On DRIFT it opens one
@@ -139,17 +160,29 @@ All three workflows are code and configuration only: none has run on GitHub yet.
   the problem (with the default, 500 replayed reviews, the retraining of 16 Nov failed the gate; without them it
   passed, see [llm.md](llm.md#the-gate-and-what-it-measured)). A scheduled run with missing secrets is skipped with a
   warning.
+  On 17 Nov 2026 GitHub started no scheduled run until after 17:35 UTC ([server.md](server.md#what-has-run-17-nov-2026)):
+  every run of the working day was started by hand. The two scheduled runs since (21:53 UTC on 17 Nov, 03:49 UTC on
+  18 Nov) failed in the check step because the server was off: no issue, no training.
 - `train.yml` ("Train"): started by `drift.yml` or by hand. It checks its settings, respects a cooldown (variable
   `TRAIN_COOLDOWN_HOURS`, default 6: no automatic run if a GPU was rented less than that long ago, by either workflow,
-  whether that run worked or not), reads the
-  queue and rents nothing if fewer than 300 reviews are pending, runs
+  whether that training worked or not; a run that found no free GPU rented nothing and does not count; a run started
+  by hand skips the cooldown), reads the queue and rents nothing if fewer than 300 reviews are `ready` (pending and
+  already scored by the model as live traffic), runs
   `python3 -m llm.runpod_pod --wait --branch main --max-minutes 45`, then `--sweep`, which fails the run if a trainer
   pod is still there, and writes a summary table (queue and serving model before and after, registered, version,
   promoted). One training run at a time (`concurrency: train`).
-- `llm/runpod_pod.py --wait` returns the trainer's exit code and writes `exit_code`, `registered`, `version`, `promoted`
-  for the workflow. The launcher deletes the pod on any way out (deadline, Ctrl-C, a cancelled workflow, a network
-  error) with three tries, and a network blip does not end the wait. The pod waits 90 s after the trainer ends so the
-  launcher can read the last log lines.
+- `llm/runpod_pod.py --wait` is written to return the trainer's exit code, read from the pod's log, and to write
+  `exit_code`, `registered`, `version`, `promoted` for the workflow. RunPod answers 403 to this project's API key on
+  the pod-log endpoint (every run of 17 Nov 2026), so the launcher takes the outcome from the server instead: more
+  reviews marked trained in `/queue/stats` means a version was registered, a new version in `/model` means it was
+  promoted. Without the log a failed gate, too few reviews and a crash look the same: nothing registered, and the run
+  ends as failed. A run that registered ends as passed. The launcher deletes the pod on any way out (deadline, Ctrl-C,
+  a cancelled workflow, a network error) with three tries, and a network blip does not end the wait. The pod waits
+  90 s after the trainer ends so the launcher could read the last log lines.
+- If none of the GPU types in `GPUS` is free, the launcher stops with "No GPU had capacity": nothing is rented, the
+  run fails, and the next drift check may try again. It happened three times on 17 Nov 2026: at 13:12 UTC with the six
+  types then in the list, and at 13:38 and 14:24 UTC with seven (the RTX 4090, $0.34/h, was added in between as the
+  last one tried). At 15:10 UTC an RTX 3080 Ti was free.
 - The settings the loop needs (secrets and variables) are listed in [server.md](server.md#switching-it-on).
 
 ## 7. Where things live
@@ -176,11 +209,20 @@ All three workflows are code and configuration only: none has run on GitHub yet.
   fast simulator; the API needs ~8 GB of RAM (the 1 GB server VM of the first version cannot host it).
 - Real 2019-2022 drift does not hurt the model, so the drift demo uses the simulated `harsh` scenario.
 - The pod clones the code from GitHub: a branch must be pushed before it can train on it.
-- A review claimed for training before the intake has scored it is not scored any more.
+- A live review can be trained on only after the model has scored it (since 17 Nov 2026), and the server scores
+  roughly 0.85 reviews a minute: 300 new reviews are ready for training about six hours after they arrive.
 - The automatic loop (`drift.yml` -> `train.yml`) needs the secrets and variables in
-  [server.md](server.md#switching-it-on)
-  and `AUTO_RETRAIN=true`; it is built but not yet switched on, and it has not run on GitHub yet.
-- A full training run on RunPod has not been done yet: only a boot test pod has (it loaded the base model and deleted
-  itself). The first trainings from the server's queue ran on a Colab T4.
-- The deploy rollback restores only the image, not the compose or gateway files.
+  [server.md](server.md#switching-it-on) and `AUTO_RETRAIN=true`. It has been on since 17 Nov 2026.
+  That day the chain ran end to end once: a drift alarm called the Train workflow, which rented a GPU, trained, and
+  promoted version 6. Each drift check of that day was started by hand: GitHub's hourly schedule had not started one by 17:35 UTC.
+  Two scheduled runs came later (21:53 UTC on 17 Nov, 03:49 UTC on 18 Nov); both failed because the server was off.
+- The pod's log cannot be read with this project's RunPod key (403), so a training that registered nothing ends as a
+  failed run without saying why: the gate, too few reviews, or a crash.
+- Every GPU type in the list can be out of stock at once; then nothing trains until a later drift check finds one
+  (on 17 Nov 2026 that took two hours).
+- The trainings of 16 and 17 Nov that produced versions 3 and 4 did not run on RunPod: they ran on a Google Colab T4
+  started by hand. Colab is not a supported way to train; there is no Colab code in the repository. The RunPod runs
+  are in [llm.md](llm.md#runpod-the-trainers-gpu).
+- The deploy job ran once (13 Nov 2026, run 43416289152) and is off since (no runner on the server); its rollback has
+  never run and restores only the image, not the compose or gateway files.
 - There is one server and no staging environment.

@@ -60,15 +60,64 @@ simulator (a PC) -> POST /reviews -> queue.reviews -> drift.yml -> train.yml -> 
   `true`, calls the Train workflow with `--replay 0 --epochs 3` (the new reviews only: after drift the old labels are
   the problem). A scheduled run with missing secrets is skipped with a warning.
 - **Training** is [train.yml](../.github/workflows/train.yml) ("Train"), started by the drift check or by hand
-  (`gh workflow run train.yml`). It checks its settings, respects a cooldown (`TRAIN_COOLDOWN_HOURS`, default 6),
-  rents nothing if fewer than 300 reviews are pending, runs `llm.runpod_pod --wait --branch main --max-minutes 45`,
+  (`gh workflow run train.yml`). It checks its settings, respects a cooldown (`TRAIN_COOLDOWN_HOURS`, default 6: no
+  automatic run if a GPU was rented less than that long ago; a run that found no free GPU rented nothing and does not
+  count; a run by hand skips the cooldown), rents nothing if fewer than 300 reviews are `ready` (pending and already
+  scored by the model as live traffic; `GET /queue/stats`), runs `llm.runpod_pod --wait --branch main --max-minutes 45`,
   then `--sweep` (fails the run if a trainer pod is left), and writes a summary table. One run at a time.
-  `make train-remote` from a PC and `AUTO_TRAIN=1` in this server's `.env` (then also `RUNPOD_API_KEY`, `QUEUE_URL`,
-  `QUEUE_USER`, `QUEUE_PASSWORD`) still work.
-- **Deploy** is the `deploy` job of [ci.yml](../.github/workflows/ci.yml) (see CD below); if the smoke test fails it
-  goes back to the image that was running.
+  `make train-remote` from a PC is the same launcher. `AUTO_TRAIN=1` in this server's `.env` (then also
+  `RUNPOD_API_KEY`, `QUEUE_URL`, `QUEUE_USER`, `QUEUE_PASSWORD`) makes the intake start pods itself; it is off and has
+  not been tried on the server.
+- **Deploy** is the `deploy` job of [ci.yml](../.github/workflows/ci.yml) (see CD below). It is off: the server has no
+  self-hosted runner and `DEPLOY_TO_RUNNER` is unset. It ran once, on 13 Nov 2026 (run 43416289152), and has been off
+  since; the version with the rollback has never run. The server is updated by hand with the `az vm run-command` line
+  in step 1 below.
 
-All of this is code and configuration: it has not run on GitHub yet.
+### What has run (17 Nov 2026)
+
+The loop was switched on on 17 Nov 2026: the secrets and variables below are set and `AUTO_RETRAIN` is `true`.
+
+- **The drift check, by hand.** 08:06 UTC: version 4, 267 requests, "no drift" (MAE 0.820 ± 0.080, recommended
+  0.899 ± 0.018). 13:12 UTC, after 492 more reviews with a strong label shift were posted: version 4, 511 requests,
+  "DRIFT" (MAE 1.209 ± 0.075, recommended 0.816 ± 0.017). It opened issue 18 and called the Train workflow.
+- **The Train workflow, by hand**, three times between 06:23 and 06:45 UTC: each rented one RTX 3070 for about
+  5 minutes. The first trained on a batch of 300 reviews and registered version 5; the champion stayed version 4.
+  The other two were tests of the launcher that train nothing. Table: [llm.md](llm.md#what-ran-on-runpod-17-nov-2026).
+- **The Train workflow, called by the drift check** at 13:12 UTC: the cooldown and the queue check passed (319 reviews
+  ready), then RunPod had none of the six GPU types then in the list free ("No GPU had capacity"). Nothing was
+  rented, the job failed, and the cooldown did not start. The RTX 4090 was then added as a seventh type. Two more
+  drift checks by hand, at 13:38 UTC (528 requests, MAE 1.203 ± 0.074, recommended 0.818 ± 0.017) and 14:24 UTC (560
+  requests, MAE 1.211 ± 0.072, recommended 0.820 ± 0.016), said "DRIFT" and called Train again: all seven types were
+  out of stock, nothing was rented.
+- **The whole chain, once.** Drift check 44111118456, started by hand at 15:09 UTC: version 4, 591 requests, MAE
+  1.230 ± 0.070, recommended 0.812 ± 0.016, "DRIFT". Its Train job: cooldown and queue check passed; RTX 3070 and RTX
+  A4000 out of stock; a pod "created on NVIDIA GeForce RTX 3080 Ti" at 15:10:17 UTC and "is gone" at 15:15:49 UTC
+  (5 min 32 s; at $0.18/h about 2 cents). "From the server: reviews marked trained 2694 -> 3099, serving model 4 ->
+  6"; `registered: True`, version 6, `promoted: True`; "Trainer pods left behind: 0". The run ended green. This
+  rental starts the 6 hour cooldown. Version 6's gate numbers are in its DagsHub run a62a1127: 100 gate reviews, MAE 0.23, recommended 1.00 (on 100
+  reviews only), complaint 0.71, combined 0.895 (version 4: 0.735 on the same reviews); the pod's log could not be read.
+- **After the promotion:** version 6 was not judged on live traffic. By 17:12 UTC the champion alias was moved back
+  to version 1 by hand, to run the whole cycle again from the start. Drift check 44138054792 (by hand, 17:32 UTC)
+  read version 1 only: 71 requests, MAE 1.845 ± 0.255, recommended 0.775 ± 0.050, each "not enough labelled requests
+  (71 < 100)", so "no drift" and no training. In its 24 hour window: version 1, 71 requests; version 4, 594;
+  version 6, 58.
+- **Not done by the workflow:** closing the issue. Issue 18 was closed by hand at 17:12 UTC.
+- **The hourly schedule.** `drift.yml` reached `main` at 06:17 UTC with the schedule `35 * * * *`. GitHub started no
+  scheduled run in the seven hourly slots from 06:35 to 12:35 UTC, although the workflow was listed as active. At
+  13:08 UTC the workflow was disabled and enabled again.
+  By 17:35 UTC no scheduled run had appeared: twelve hourly slots in a row since the workflow reached `main`, five of
+  them after it was enabled again. Two scheduled runs came later: run 44184538814 at 21:53:45 UTC on 17 Nov and run
+  44233113971 at 03:49:43 UTC on 18 Nov, neither at :35. That is 2 runs in the 22 hourly slots from 06:35 UTC on 17 Nov
+  to 03:35 UTC on 18 Nov; the first came 15 h 36 min after the schedule reached `main` (06:17 UTC). Both failed in the
+  check step with "Could not read the server's /model: <urlopen error timed out>", because the VM was switched off at
+  those times. No issue was opened and no training was started (the retrain job was skipped). The cause of the missing
+  slots is not known. Not proven yet: a scheduled check that reaches the server and completes. Until the schedule is
+  reliable, the drift check has to be started by hand (`gh workflow run drift.yml`) or by something else that has a
+  clock.
+- **On GitHub the Train runs look failed** even when they trained: RunPod answers 403 to this project's API key on
+  the pod-log endpoint, so the launcher reads the outcome from this server (`/queue/stats`, `/model`). A run that
+  registered a version ends green; a run that registered nothing ends red, whether the gate failed, there were too few
+  reviews, or the trainer crashed. The summary page of the run says which numbers changed.
 
 ### Switching it on
 
@@ -96,9 +145,10 @@ All of this is code and configuration: it has not run on GitHub yet.
    curl -s -u "trainer:$(cat ~/.config/skysat/login-trainer)" "https://$(cat ~/.config/skysat/server-address)/queue/stats"
    ```
 
-4. The repository owner adds the settings in GitHub, Settings, Secrets and variables, Actions. The passwords for `github`
-   and `trainer` are on the PC that created them; send them to the owner privately, never in an issue, a comment or a
-   commit: the repository is public.
+4. The settings in GitHub, Settings, Secrets and variables, Actions: **done on 2026-11-17** (all except
+   `TRAIN_COOLDOWN_HOURS` and `DEPLOY_TO_RUNNER`, which are unset; the RunPod key is stored as `RUNPOD_API`). The
+   passwords for `github` and `trainer` are on the PC that created them; they go to the repository owner privately,
+   never in an issue, a comment or a commit: the repository is public.
 
    | Secrets | Value |
    |---|---|
@@ -115,8 +165,8 @@ All of this is code and configuration: it has not run on GitHub yet.
    | `TRAIN_COOLDOWN_HOURS` | optional, default 6 |
    | `DEPLOY_TO_RUNNER` | `true` for the deploy job (needs the self-hosted runner, see CD below) |
 
-5. Try each part by hand and read its log: `gh workflow run drift.yml`, then `gh workflow run train.yml`. Note the date
-   of the first real run; none has run yet.
+5. Try each part by hand and read its log (`gh workflow run drift.yml`, then `gh workflow run train.yml`): **done on
+   2026-11-17**, see [What has run](#what-has-run-17-nov-2026).
 
 **Switching it off**: `AUTO_RETRAIN` not `true` (a drift alarm then only opens the issue); `gh workflow disable
 drift.yml` stops the drift check; `DEPLOY_TO_RUNNER` not `true` stops the deploy job; `AUTO_TRAIN=0` (the default)
@@ -133,9 +183,11 @@ Enable them again afterwards.
 ### What it can cost
 
 - A training run: the Train workflow stops the pod after 45 minutes; at the dearest GPU in the list (an RTX 4090 at
-  $0.34/h, tried only when the six cheaper types are all out of stock) that is at most about $0.26 per run. A run on
-  the usual RTX 3070 took about 5 minutes, about one cent. With the 6 h cooldown there are at most 4 automatic runs a
-  day.
+  $0.34/h, tried only when the six cheaper types are all out of stock) that is at most about $0.26 per run. With the
+  6 h cooldown there are at most 4 automatic runs a day. Measured on 17 Nov 2026, by the price list (the bill itself
+  was not read): each of the three hand-started runs held an RTX 3070 ($0.13/h) for about 5 minutes, about one cent;
+  the run started by the drift check held an RTX 3080 Ti ($0.18/h) for 5 min 32 s, about 2 cents. A run that finds no
+  free GPU costs nothing.
 - The VM: `Standard_B2as_v2` in austriaeast is $0.0864 per hour on Azure's price list, about $2 a day, from the Azure
   for Students credit. No card is charged: when the credit ends, Azure disables the subscription. Check Cost
   Management. Deallocate the VM when it is not needed:
@@ -180,15 +232,38 @@ user, and these two files, which are never in git:
 Then `docker compose pull && docker compose up -d --no-build`. `API_IMAGE` keeps its name: it is now the complaint-box image
 (`llm/Dockerfile`).
 
+**The read-only database user.** Grafana reads through the role `grafana_reader`. Create it by hand, with
+`docker compose exec postgres psql -U skysat -d skysat`:
+
+```sql
+CREATE ROLE grafana_reader LOGIN PASSWORD '<GRAFANA_DB_PASSWORD from .env>';
+GRANT SELECT ON llm_scores TO grafana_reader;
+```
+
+The table must exist first: the API creates it with its first logged answer, or `monitoring/init.sql` does on a new
+volume. The role gets nothing on the schema `queue`, where the review text is. Read from the server's database on 18 Nov
+2026: `grafana_reader` had SELECT on the old table `predictions` only and no grant on `llm_scores`, so all 11 dashboard
+panels failed there with `permission denied for table llm_scores (SQLSTATE 42501)`. The role was created by hand on 5 Nov,
+before `llm_scores` existed; `monitoring/init.sql` runs only when the database volume is created, the server's volume is
+from 5 Nov, and a new table gives other roles nothing.
+
 **Reaching the VM.** SSH is closed. `az vm run-command invoke` works from anywhere, over HTTPS (the university Wi-Fi
 blocks SSH anyway: its Palo Alto firewall answers the handshake). To open SSH for a while:
 `az vm open-port -g skysat-server -n skysat-server --port 22 --priority 1000`, then delete that rule again.
 
-## CD: deploy on every push to main
+## CD: deploy on every push to main (written, not switched on)
 
-The `deploy` job in [ci.yml](../.github/workflows/ci.yml) runs on a self-hosted runner on this VM: it pulls the image
-CI just built, restarts the stack and runs the smoke test on the server's own port. Only the repository owner can
-switch it on:
+This job ran once. CI/CD run 43416289152 (push to `main`, commit be607ef, 13 Nov 2026) ran it on the self-hosted runner
+`skysat-server` (labels self-hosted, skysat) from 13:09 to 13:11 UTC and it succeeded: it pulled the new image,
+restarted the stack and the smoke test passed. A second deploy the same day (commit 9aabbbd, 14:56 UTC) was cancelled.
+After that the runner was removed and the variable `DEPLOY_TO_RUNNER` deleted, and every CI run on `main` since has
+`deploy: skipped`. The rollback was added on 16 Nov 2026 (commit 317f0fb) and has never run. CI pushes the image to
+ghcr.io on every push to `main`, and the server is updated by hand with the `az vm run-command` line in
+[Switching it on](#switching-it-on), step 1.
+
+The `deploy` job in [ci.yml](../.github/workflows/ci.yml) is written to run on a self-hosted runner on this VM: it
+pulls the image CI just built, restarts the stack and runs the smoke test on the server's own port. Only the
+repository owner can switch it on:
 
 1. Settings → Actions → General → *Fork pull request workflows from outside collaborators* → **Require approval for
    all external contributors**. The repo is public: never approve runs from strangers, because their code would run
@@ -198,7 +273,7 @@ switch it on:
 4. Settings → Secrets and variables → Actions → Variables: `DEPLOY_TO_RUNNER` = `true`.
 
 The deploy job remembers the image that was running and goes back to it if the smoke test fails (only the image: the
-compose and gateway files stay as they are).
+compose and gateway files stay as they are). The rollback has not been tried on the server.
 
 A runner uses memory on a VM and is the one thing that runs outside code here, so stop it when it is not needed.
 

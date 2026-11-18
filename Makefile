@@ -1,7 +1,7 @@
 # Common commands for SkySat, the complaint box (docs/llm.md). Run `make help` to list them.
 #
 #   make install        one-time: .venv with the pinned packages for the tests (no GPU, no torch)
-#   make test           run the tests;   make ci: the checks GitHub Actions runs
+#   make test           run the tests;   make ci: the tests and the compose check (CI on GitHub checks more)
 #   make llm-install    one-time: .venv-llm with CUDA PyTorch, transformers, peft (NVIDIA GPU)
 #   make llm-up         the Docker stack: API, intake (POST /reviews + the queue), PostgreSQL, Nginx, Grafana, MLflow
 #   make simulate-seed  simulated passengers: training reviews for the first model, into the queue
@@ -41,7 +41,7 @@ test: ## run pytest
 compose-check: ## validate docker-compose.yml (all profiles)
 	docker compose --profile loadtest config --quiet
 
-ci: test compose-check ## the same two checks as the GitHub Actions workflow
+ci: test compose-check ## pytest and the compose check (CI on GitHub also checks the server compose file and Nginx, and builds the image)
 
 smoke: ## /health + POST /score through Nginx on localhost:8080 (needs a champion adapter)
 	bash .github/scripts/smoke-test.sh http://localhost:8080
