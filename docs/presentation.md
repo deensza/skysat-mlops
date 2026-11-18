@@ -130,7 +130,7 @@ GitHub checks drift and opens an issue; the Train workflow can rent the GPU (bui
 3. `harsh` traffic → live MAE and accuracy cross the limits → `make llm-drift` says DRIFT
 4. Retrain on harsh 2019 → v2 promoted → the API loads it → Grafana recovers
 
-Video: *(link)* · Script: [demo/video.md](../demo/video.md)
+Videos: [server and retraining loop](https://drive.google.com/file/d/1Ulbq2-DxDoxo9LLP3ISe-qSe07x_d64b/view) · [Kaggle competition, the first model](https://drive.google.com/file/d/1dPYeIG6mb0o7lfYjoIIgoqsWV4Z0CbQd/view) · Script: [demo/video.md](../demo/video.md)
 
 ## 11. What we learned
 
