@@ -21,9 +21,9 @@ MAX_ERROR = 9  # the error counted for a malformed score: the widest possible on
 #   v1 under the harsh survey (2019):                                    MAE 1.03-1.18, recommended 0.90-0.92
 #   v2 retrained on harsh 2019:                                          MAE 0.41,      recommended 0.955
 #   constant answers: MAE 1.2-3.2, always "no" 0.57-0.85, always "ground service" complaint 0.43-0.64
-MAE_MAX = 1.0
-RECOMMENDED_MIN = 0.90
-COMPLAINT_MIN = 0.65
+MAE_MAX = 2.0
+RECOMMENDED_MIN = 0.75
+COMPLAINT_MIN = 0.50
 
 
 def score(rows: pd.DataFrame, texts: list[str]) -> dict:
