@@ -188,6 +188,14 @@ cmd "curl -u team:*** -X POST https://<server>/score -d '{\"review\": \"\"}'    
 printf '{"airline": "Imaginary Air", "review": ""}' > "$TMP/body.json"
 code=$(api team /score -X POST -H 'Content-Type: application/json' --data-binary "@$TMP/body.json" -o /dev/null -w '%{http_code}')
 note "HTTP $code$([ "$code" = 422 ] && echo ': refused before it reaches the model')"
+# POST /ask: the same model for a review typed as plain text; its answers are not logged
+ASK="The screen at my seat was broken and so was the one next to it. No films and no music for ten hours."
+cmd "curl -u team:*** -X POST https://<server>/ask -H 'Content-Type: text/plain' -d '$ASK'"
+printf '%s' "$ASK" > "$TMP/body.txt"
+api team /ask -X POST -H 'Content-Type: text/plain' --data-binary "@$TMP/body.txt" 2>/dev/null \
+  | json "print('   ' + str(d['score']) + '/10 | recommended', d['recommended'], '| complaint', d['complaint'], '| version', d['model_version'], '| not logged')" 2>/dev/null \
+  || note "no answer from /ask (the server may run an image from before 18 Nov 2026)"
+note "The same in the browser: https://<server>/docs -> POST /ask -> Try it out: one text box, type any review, Execute."
 note "What it cannot do: other languages were not tested, it reads only the first 250 words, it knows only these 8 complaints."
 if [ "$failed" = 0 ] && [ "$asked" -gt 0 ]; then done_ "2 what the model can do" "shown ($agreed of $asked complaints as a person would say)"
 else done_ "2 what the model can do" "PROBLEM ($failed requests without an answer)"; fi
