@@ -3,6 +3,8 @@ steps (load the base model, attach an adapter, generate) are replaced by fakes."
 
 import json
 import logging
+import os
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -187,19 +189,56 @@ def test_db_never_receives_the_review_the_title_or_the_airline(fake, tmp_path, m
     out = serve.score(serve.ScoreRequest(**review(true_score=8, true_recommended="yes")))
 
     sqls = [sql for sql, _ in pool.executed]
-    assert sqls[0].startswith("CREATE TABLE IF NOT EXISTS llm_scores") and sqls[1].startswith("INSERT INTO llm_scores")
+    assert sqls[0].startswith("CREATE TABLE IF NOT EXISTS llm_scores") and sqls[-1].startswith("INSERT INTO llm_scores")
     for column in ["created_at", "model_version", "latency_ms", "score", "recommended", "complaint", "true_score",
                    "true_recommended"]:
         assert column in sqls[0]
     for column in ["review", "title", "airline", "cabin", "travel", "prompt"]:
         assert column not in sqls[0].lower()
 
-    params = pool.executed[1][1]
+    params = pool.executed[-1][1]
     assert params == {"model_version": "3", "latency_ms": out["latency_ms"], "score": 7, "recommended": "yes",
                       "complaint": "food", "true_score": 8, "true_recommended": "yes"}
     logged = repr(pool.executed)
     for text in [REVIEW, "lasagne", "Cold", "Imaginary", "Lisbon", "BA284"]:
         assert text not in logged
+
+
+def test_grafanas_read_only_user_can_read_a_log_the_api_created(monkeypatch):
+    """On the server the database volume is older than llm_scores, so the API created the table, and a new table gives
+    other roles nothing: every Grafana panel answered "permission denied for table llm_scores" (18 Nov 2026)."""
+    url = os.environ.get("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("TEST_DATABASE_URL not set (CI starts a PostgreSQL)")
+    assert url.rstrip("/").rsplit("/", 1)[-1].endswith("_test"), "TEST_DATABASE_URL must name a *_test database"
+    psycopg = pytest.importorskip("psycopg")
+
+    class Pool:
+        @contextmanager
+        def connection(self, timeout=None):
+            yield conn
+
+    row = {"model_version": "3", "latency_ms": 1, "score": 7, "recommended": "yes", "complaint": "food",
+           "true_score": None, "true_recommended": None}
+    with psycopg.connect(url, autocommit=True) as conn:
+        monkeypatch.setattr(serve, "db", Pool())
+        try:
+            for role_exists in [False, True]:  # a laptop has no such role: the log must work there too
+                conn.execute("DROP TABLE IF EXISTS llm_scores")
+                conn.execute("DROP ROLE IF EXISTS grafana_reader")
+                if role_exists:
+                    conn.execute("CREATE ROLE grafana_reader")
+                for _ in range(2):  # every start of the API runs the setup again
+                    monkeypatch.setattr(serve, "_table_ready", False)
+                    serve.log_score(row)
+                assert conn.execute("SELECT count(*) FROM llm_scores").fetchone()[0] == 2
+                assert conn.execute("SELECT 1 FROM pg_indexes WHERE indexname = 'llm_scores_created_at'").fetchone()
+            may = {p: conn.execute("SELECT has_table_privilege('grafana_reader', 'llm_scores', %s)", (p,)).fetchone()[0]
+                   for p in ["SELECT", "INSERT", "UPDATE", "DELETE"]}
+            assert may == {"SELECT": True, "INSERT": False, "UPDATE": False, "DELETE": False}
+        finally:
+            conn.execute("DROP TABLE IF EXISTS llm_scores")
+            conn.execute("DROP ROLE IF EXISTS grafana_reader")
 
 
 def test_db_gets_nulls_when_the_truth_is_not_sent(fake, tmp_path, monkeypatch):
@@ -208,7 +247,7 @@ def test_db_gets_nulls_when_the_truth_is_not_sent(fake, tmp_path, monkeypatch):
     monkeypatch.setattr(serve, "_table_ready", False)
     serve.serving.install(write_adapter(tmp_path / "adapter"), "3", "test")
     serve.score(serve.ScoreRequest(**review()))
-    params = pool.executed[1][1]
+    params = pool.executed[-1][1]
     assert params["true_score"] is None and params["true_recommended"] is None
 
 

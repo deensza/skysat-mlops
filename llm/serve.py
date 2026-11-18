@@ -209,6 +209,15 @@ CREATE_TABLE = (
     " model_version text, latency_ms integer, score integer, recommended text, complaint text,"
     " true_score integer, true_recommended text)"
 )
+# Run before the first row of each process. monitoring/init.sql has the same table and index, but it runs only when
+# the database volume is created: on an older volume (the server's) this code makes the table, and a new table gives
+# other roles nothing. Grafana's read-only user on the server (docs/server.md) therefore gets SELECT here, if it exists.
+LOG_SETUP = [
+    CREATE_TABLE,
+    "CREATE INDEX IF NOT EXISTS llm_scores_created_at ON llm_scores (created_at)",
+    "DO $$ BEGIN IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'grafana_reader') THEN"
+    " GRANT SELECT ON llm_scores TO grafana_reader; END IF; END $$",
+]
 INSERT = (f"INSERT INTO llm_scores ({', '.join(LOG_COLUMNS)})"
           f" VALUES ({', '.join(f'%({c})s' for c in LOG_COLUMNS)})")
 
@@ -219,7 +228,8 @@ def log_score(row: dict) -> None:
     try:
         with db.connection(timeout=5) as conn:
             if not _table_ready:
-                conn.execute(CREATE_TABLE)
+                for sql in LOG_SETUP:
+                    conn.execute(sql)
                 _table_ready = True
             conn.execute(INSERT, {c: row[c] for c in LOG_COLUMNS})
     except Exception as err:
@@ -328,7 +338,8 @@ def scores_recent(hours: float = Query(24, gt=0, le=24 * 366), version: str | No
     try:
         with db.connection(timeout=5) as conn:
             if not _table_ready:
-                conn.execute(CREATE_TABLE)
+                for sql in LOG_SETUP:
+                    conn.execute(sql)
                 _table_ready = True
             return recent_scores(conn, hours, version)
     except Exception as err:
