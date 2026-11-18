@@ -71,6 +71,10 @@ def parse_args(argv=None):
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--base", default=BASE_MODEL)
     p.add_argument("--out", type=Path, default=DEFAULT_OUT, help="where the adapter is saved")
+    p.add_argument("--max-train-seconds", type=float, default=None,
+                   help="stop training after this many seconds and go on to the gate and the registration; default: no limit. "
+                        "The training part is only 80-92 s of a 6.5-10 min pod run, so this saves at most about a minute; "
+                        "a cut adapter is undertrained")
     p.add_argument("--no-mlflow", action="store_true", help="train and gate only: register nothing (the batch goes back)")
     p.add_argument("--no-promote", action="store_true", help="register, but leave the champion alias where it is")
     p.add_argument("--keep-pending", action="store_true",
