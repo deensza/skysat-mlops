@@ -62,7 +62,7 @@ def parse_args(argv=None):
     p.add_argument("--n", type=int, default=2000, help="most new reviews to take from the queue")
     p.add_argument("--replay", type=int, default=500, help="already-trained reviews mixed in")
     p.add_argument("--min-new", type=int, default=300, help="fewer new reviews than this: train nothing")
-    p.add_argument("--n-gate-min", type=int, default=100, help="fewest gate reviews (10% of the new ones if that is more)")
+    p.add_argument("--n-gate-min", type=int, default=100, help="fewest gate reviews (10%% of the new ones if that is more)")
     p.add_argument("--n-gate-max", type=int, default=200, help="most gate reviews (each is generated twice)")
     p.add_argument("--epochs", type=int, default=1)
     p.add_argument("--batch", type=int, default=2)  # fits an 8 GB card with gradient checkpointing
