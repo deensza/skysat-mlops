@@ -7,7 +7,8 @@ Team: Bermal Deniz Akkaya, Osman Şahin Güler
 
 Demo videos: [the server and its retraining loop](https://drive.google.com/file/d/1Ulbq2-DxDoxo9LLP3ISe-qSe07x_d64b/view) (2:18) · [the Kaggle competition, the project's first model](https://drive.google.com/file/d/1dPYeIG6mb0o7lfYjoIIgoqsWV4Z0CbQd/view) (1:46) · [folder](https://drive.google.com/drive/folders/1kfRWCZTZPatf758JnG09AcfO2DWUIb80)
 
-Live demo: [demo/demo.sh](demo/demo.sh) shows the running system in eight steps, about 3 minutes with `--timed`;
+Live demo: [demo/demo.sh](demo/demo.sh) shows the running system in eight steps, about 3 minutes with `--timed`
+(with `--train` it also starts a real training on a rented GPU and shows its result at the end);
 [demo/demo.md](demo/demo.md) is the same demo as commands to type.
 
 SkySat is a **complaint box** for airline reviews. A small LLM (Qwen2.5-1.5B-Instruct, LoRA-tuned) reads a real

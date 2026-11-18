@@ -14,11 +14,18 @@
 #                                     (needs AUTO_RETRAIN=true, drift on the server and 300 ready reviews; about 10
 #                                     minutes and at most about $0.26; if a condition is missing it says which and
 #                                     shows the recorded run instead). Not a 5-minute demo.
+#   bash demo/demo.sh --train         starts a real training as the first thing (the Train workflow by hand: a rented
+#                                     RunPod GPU, at most about $0.26), goes through the steps while it runs, and shows
+#                                     its result as the last thing. A run takes 6 to 10 minutes; needs 300 ready
+#                                     reviews in the queue. If it is still running at the end, the script waits
+#                                     (q + Enter stops the waiting, the run goes on by itself).
+#   bash demo/demo.sh --train-run ID  the same, for a Train run that is already started (in the browser: Actions ->
+#                                     Train -> Run workflow): the script starts nothing and shows that run's result.
 #
 # It reads, and never prints: the server's address (SKYSAT_SERVER, or ~/.config/skysat/server-address) and the gateway
 # logins team, github and trainer (SKYSAT_LOGIN_TEAM / _GITHUB / _TRAINER, or ~/.config/skysat/login-<name>).
 # It changes nothing except: steps 2 and 3 send requests that are logged like any other, step 3 adds one made-up
-# review to the queue, and --live starts the drift check.
+# review to the queue, --live starts the drift check, and --train starts the Train workflow.
 # Needs: curl, python3, gh (signed in), and .venv for the drift check (make install).
 
 set -u
@@ -30,17 +37,21 @@ MODEL="skysat-reviews"
 RECORDED_RUN="${SKYSAT_RECORDED_RUN:-44246174603}"   # 18 Nov 2026: the drift check that ended in version 7
                                                      # (17 Nov, version 6: 44111118456)
 CFG="$HOME/.config/skysat"
-PAUSE=1; LIVE=0; POST=1; AUTO=0; QUICK=0; T0=$(date +%s)
-REVIEW=
+PAUSE=1; LIVE=0; POST=1; AUTO=0; QUICK=0; TRAIN=0; T0=$(date +%s)
+REVIEW=; TRAIN_RUN=
+TRAIN_ARGS="${SKYSAT_TRAIN_ARGS:---replay 0 --epochs 3}"   # as the drift check calls it: the new reviews only, 3 passes
+TRAIN_REASON="${SKYSAT_TRAIN_REASON:-by hand}"             # "by hand" skips the cooldown; any other reason waits for it
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-pause) PAUSE=0 ;;
     --timed) AUTO=12 ;;
     --quick) QUICK=1 ;;
     --live) LIVE=1 ;;
+    --train) TRAIN=1 ;;
+    --train-run) shift; TRAIN_RUN="${1:?--train-run needs the id of a Train run}" ;;
     --skip-post) POST=0 ;;
     --review) shift; REVIEW="${1:?--review needs a text}" ;;
-    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option $1 (see --help)"; exit 2 ;;
   esac
   shift
@@ -75,9 +86,58 @@ pause() {  # Enter for the next step; with --timed it also goes on by itself
 json() { python3 -c "import json,sys
 d=json.load(sys.stdin)
 $1"; }
+newest_run() { gh run list -R "$REPO" --workflow "$1" --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null; }
+start_run() {  # start_run <workflow> [gh options...]: starts it on main and prints the new run's id
+  # The new run is told apart by its id, not by time: this PC's clock and GitHub's need not agree.
+  local wf="$1" last id; shift
+  last=$(newest_run "$wf")
+  gh workflow run "$wf" -R "$REPO" --ref main "$@" >/dev/null 2>&1 || return 1
+  for _ in $(seq 1 12); do
+    sleep 5; id=$(newest_run "$wf")
+    if [ -n "$id" ] && [ "$id" != "$last" ]; then echo "$id"; return 0; fi
+  done
+  return 1
+}
+run_state() {  # one line: where a run is now, and the step it is in
+  gh run view "$1" -R "$REPO" --json status,conclusion,jobs --jq \
+    '.status + (if (.conclusion // "") != "" then " (" + .conclusion + ")" else "" end) + ([.jobs[].steps[]? | select(.status == "in_progress") | ", in step \"" + .name + "\""] | join(""))' 2>/dev/null
+}
+minutes_since() { echo $(( ($(date +%s) - $1) / 60 )); }
+run_took() {  # how long a finished run took, by GitHub's own clock
+  gh run view "$1" -R "$REPO" --json createdAt,updatedAt --jq '((.updatedAt | fromdate) - (.createdAt | fromdate)) as $s | "\($s / 60 | floor) min \($s % 60) s"' 2>/dev/null
+}
 
 echo "${B}SkySat${N}: what the model does, and what makes this a level 2 MLOps project in small, on the running system."
 echo "Server: https://<server>   Registry: $MLFLOW   Repository: $REPO"
+
+# ----------------------------------------------------------------------------------------------------------------
+TRAIN_ID=
+if [ -n "$TRAIN_RUN" ]; then
+  head_ "0. A training was started before this demo, on a rented GPU; its result is the last thing shown" \
+        "Renting the GPU, starting it and the gate take 6 to 10 minutes, so it runs while the other steps are shown."
+  cmd "gh run view $TRAIN_RUN     (https://github.com/$REPO/actions/runs/$TRAIN_RUN)"
+  state=$(run_state "$TRAIN_RUN")
+  if [ -n "$state" ]; then TRAIN_ID=$TRAIN_RUN; note "run $TRAIN_ID is $state"
+  else note "run $TRAIN_RUN could not be read (gh): the recorded run in step 6 stands in"; fi
+  pause
+elif [ "$TRAIN" = 1 ]; then
+  head_ "0. A training starts now, on a rented GPU; its result is the last thing shown" \
+        "Renting the GPU, starting it and the gate take 6 to 10 minutes, so it runs while the other steps are shown."
+  ready=$(api trainer /queue/stats 2>/dev/null | json "print(d.get('ready', d['pending']))" 2>/dev/null); ready=${ready:-0}
+  note "reviews in the queue that the model has scored and nobody has trained on: $ready (a training needs 300)"
+  if [ "$ready" -ge 300 ]; then
+    cmd "gh workflow run train.yml -f reason='$TRAIN_REASON' -f trainer_args='$TRAIN_ARGS'      (at most about \$0.26)"
+    if TRAIN_ID=$(start_run train.yml -f "reason=$TRAIN_REASON" -f "trainer_args=$TRAIN_ARGS"); then
+      note "run $TRAIN_ID started: https://github.com/$REPO/actions/runs/$TRAIN_ID"
+      note "on that page the line \"Pod ... created on <GPU>\" appears after about a minute: a GPU is rented"
+    else
+      TRAIN_ID=; note "the run could not be started or found (gh): the recorded run in step 6 stands in"
+    fi
+  else
+    note "too few, so nothing is started: the recorded run in step 6 stands in"
+  fi
+  pause
+fi
 
 # ----------------------------------------------------------------------------------------------------------------
 head_ "1. A model is serving, and it is the one the registry says" \
@@ -274,10 +334,10 @@ pause
 show_run() {  # the steps and the telling log lines of one Drift check run
   local id="$1"
   gh run view "$id" -R "$REPO" --json conclusion,createdAt,event,jobs --jq \
-    '"   run '"$id"' (\(.event)) of \(.createdAt): \(.conclusion)", (.jobs[] | "     job \(.name): \(.conclusion)", (.steps[] | select(.name | test("Drift check|Open an issue|Cooldown|Queue before|Train on a rented GPU|A GPU was rented|No pod may be left")) | "        \(.name): \(.conclusion)"))' 2>/dev/null
+    '"   run '"$id"' (\(.event)) of \(.createdAt): \(.conclusion)", (.jobs[] | "     job \(.name): \(.conclusion)", (.steps[] | select(.name | test("Drift check|Open an issue|Cooldown|Queue before|Train on a rented GPU|A GPU was rented|No pod may be left|Close the drift issue")) | "        \(.name): \(.conclusion)"))' 2>/dev/null
   gh run view "$id" -R "$REPO" --log 2>/dev/null > "$TMP/run.log"
   echo "   from its log:"
-  grep -a 'Drift check: \|model version .* only\|| score MAE \|| recommended accuracy \|Pod [a-z0-9]* created on\|Pod [a-z0-9]* is gone\|From the server:\|Outcome: \|No GPU had capacity\|Training skipped\|Too few new reviews\|Trainer pods left behind' "$TMP/run.log" \
+  grep -a 'Drift check: \|model version .* only\|| score MAE \|| recommended accuracy \|Pod [a-z0-9]* created on\|Pod [a-z0-9]* is gone\|From the server:\|Outcome: \|No GPU had capacity\|Training skipped\|Too few new reviews\|Trainer pods left behind\|Closed issue #\|No open drift issue' "$TMP/run.log" \
     | cut -f3- | sed 's/^[0-9-]*T\([0-9:]*\)[0-9.]*Z /\1  /' | grep -v '36;1m' | cut -c1-200 | sed 's/^/        /'
 }
 head_ "6. Training starts by itself and ends in a new serving model (continuous training)" \
@@ -289,17 +349,8 @@ if [ "$LIVE" = 1 ]; then
   ready=$(api trainer /queue/stats 2>/dev/null | json "print(d.get('ready', d['pending']))" 2>/dev/null); ready=${ready:-0}
   note "conditions for a live run: AUTO_RETRAIN=$auto (needs true) | drift now: $([ "$DRIFT_NOW" = 1 ] && echo yes || echo no) (needs yes) | ready reviews: $ready (needs 300)"
   if [ "$auto" = true ] && [ "$DRIFT_NOW" = 1 ] && [ "$ready" -ge 300 ]; then
-    # The new run is told apart by its id, not by time: this PC's clock and GitHub's need not agree.
-    newest() { gh run list -R "$REPO" --workflow drift.yml --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null; }
-    last_id=$(newest)
     cmd "gh workflow run drift.yml          (the only command typed; a rented GPU costs at most about \$0.26)"
-    gh workflow run drift.yml -R "$REPO" --ref main >/dev/null 2>&1
-    live_id=
-    for _ in $(seq 1 12); do
-      sleep 5; live_id=$(newest)
-      if [ -n "$live_id" ] && [ "$live_id" != "$last_id" ]; then break; fi
-      live_id=
-    done
+    live_id=$(start_run drift.yml) || live_id=
     if [ -n "$live_id" ]; then
       note "run $live_id started: https://github.com/$REPO/actions/runs/$live_id  (about 10 minutes; watching)"
       gh run watch "$live_id" -R "$REPO" --interval 20 >/dev/null 2>&1
@@ -315,6 +366,10 @@ if [ "$LIVE" = 1 ]; then
   else
     note "a condition is missing, so nothing is started: the recorded run follows"
   fi
+fi
+if [ -n "$TRAIN_ID" ]; then
+  note "the training of step 0: run $TRAIN_ID is $(run_state "$TRAIN_ID")."
+  note "Its result is the last thing shown. What a finished run looks like, with the drift check in front of it:"
 fi
 if [ "$LIVE_DONE" = 0 ]; then
   cmd "gh run view $RECORDED_RUN --log     (recorded: https://github.com/$REPO/actions/runs/$RECORDED_RUN)"
@@ -349,6 +404,46 @@ cat <<EOF
    - No orchestrator (GitHub Actions plays that part), no feature store, one server and no staging environment.
    - The loop has ended in a new serving model twice (17 and 18 Nov 2026), both times on simulated drift.
 EOF
+
+# ----------------------------------------------------------------------------------------------------------------
+if [ -n "$TRAIN_ID" ]; then
+  head_ "9. The training of step 0" \
+        "The same workflow the drift check calls: queue check -> rented GPU -> trainer -> gate -> registry -> server."
+  cmd "gh run view $TRAIN_ID     (https://github.com/$REPO/actions/runs/$TRAIN_ID)"
+  [ "$PAUSE" = 1 ] && note "(it is checked every 20 s; q + Enter stops the waiting, the run goes on by itself)"
+  st=
+  while :; do
+    st=$(gh run view "$TRAIN_ID" -R "$REPO" --json status --jq .status 2>/dev/null)
+    [ "$st" = completed ] && break
+    note "$(date +%H:%M:%S)  $(run_state "$TRAIN_ID")"
+    key=
+    if [ "$PAUSE" = 1 ]; then read -r -t 20 key || true; else sleep 20; fi
+    [ "$key" = q ] && break
+    [ "$(minutes_since "$T0")" -ge 30 ] && break   # a run stops its pod after 45 minutes; the script does not wait that long
+  done
+  if [ "$st" = completed ]; then
+    show_run "$TRAIN_ID"
+    steps=$(gh run view "$TRAIN_ID" -R "$REPO" --json jobs --jq '[.jobs[].steps[] | "\(.name)=\(.conclusion)"] | join(";")' 2>/dev/null)
+    api team /model > "$TMP/model-after.json"
+    NOW=$(json "print(d.get('version',''))" < "$TMP/model-after.json" 2>/dev/null)
+    api trainer /queue/stats 2>/dev/null | json "print('   queue now: pending', d['pending'], '| trained', d['trained'])" 2>/dev/null
+    note "the server served version ${SERVING:-?} when the demo began and serves version ${NOW:-?} now; the run took $(run_took "$TRAIN_ID")"
+    if grep -aq "'registered': True" "$TMP/run.log"; then
+      if grep -aq "'promoted': True" "$TMP/run.log"; then done_ "9 live training" "shown (run $TRAIN_ID: a new version, promoted, serving)"
+      else done_ "9 live training" "shown (run $TRAIN_ID: a new version, registered; it did not beat the champion, which stays)"; fi
+    elif grep -aq "No GPU had capacity" "$TMP/run.log"; then done_ "9 live training" "no GPU was free on RunPod: nothing was rented (run $TRAIN_ID)"
+    else
+      case "$steps" in
+        *"Cooldown=success"*"Queue before=skipped"*) done_ "9 live training" "stopped by the cooldown: nothing was rented (run $TRAIN_ID)" ;;
+        *"Queue before=success"*"Train on a rented GPU=skipped"*) done_ "9 live training" "too few ready reviews: nothing was rented (run $TRAIN_ID)" ;;
+        *) done_ "9 live training" "ended without a new version (run $TRAIN_ID; the reason is in the lines above)" ;;
+      esac
+    fi
+  else
+    note "still running: https://github.com/$REPO/actions/runs/$TRAIN_ID   (the new version will be in step 1's table)"
+    done_ "9 live training" "still running (run $TRAIN_ID)"
+  fi
+fi
 echo; echo "${B}Summary${N}  ${D}[the whole run took $(clock)]${N}"
 for r in "${RESULTS[@]}"; do printf '   %-42s %s\n' "${r%%|*}" "${r#*|}"; done
 case "${RESULTS[*]}" in *PROBLEM*) exit 1 ;; esac

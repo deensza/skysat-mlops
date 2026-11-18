@@ -54,7 +54,35 @@ almost no labelled requests yet, so it said "not enough labelled requests". For 
 
 If you are late after step 4, skip step 5's commands and only say its sentence.
 
+**With a live training** there are two more steps: 0 (start it, 0:15) and 9 (its result, 0:30). The training itself
+takes 6 to 10 minutes whatever is on screen, so it only finishes inside the demo if slides or questions come between
+steps 8 and 9. If it has not finished, step 6's recorded run shows the ending.
+
 ---
+
+## 0. Optional: a real training starts now (0:15)
+
+Only if you want a GPU rented live. It costs at most about $0.26 (usually 2 to 3 cents) and needs 300 reviews in the
+queue that the model has already scored: post about 400 at least an hour before (`make simulate ...`).
+
+**Say:** "Before anything else I start a real training, on a GPU that is rented for these minutes only. We come back
+to it at the end."
+
+```bash
+curl -s -u "$T" "$S/queue/stats"; echo        # "ready" must be 300 or more
+gh workflow run train.yml -R deensza/skysat-mlops -f trainer_args="--replay 0 --epochs 3"
+gh run list -R deensza/skysat-mlops --workflow train.yml --limit 1
+```
+
+Or in the browser: Actions → Train → Run workflow. Open the run's page and leave the tab open: after about a minute
+the step "Train on a rented GPU" prints `Pod ... created on NVIDIA GeForce RTX ...`. Started by hand, the run skips
+the cooldown; the queue check and the gate still apply.
+
+With the script: `bash demo/demo.sh --train` starts it and shows the result as its last step;
+`bash demo/demo.sh --train-run <id>` does the same for a run you started in the browser.
+
+Fewer epochs would not make it shorter: in the runs of 17 and 18 Nov the training itself took 80 to 92 seconds of a
+pod that existed for 5.5 to 8.7 minutes. The rest is renting, starting, downloading the base model and the gate.
 
 ## 1. A model is serving, and it is the one the registry says (0:30)
 
@@ -286,6 +314,33 @@ Doing this live takes about 10 minutes and needs a free GPU, so it does not fit 
 
 So the claim is "level 2 in small, with these gaps", not "a level 2 system".
 
+## 9. Optional: the result of the training of step 0 (0:30)
+
+Go back to the run's page, or:
+
+```bash
+gh run list -R deensza/skysat-mlops --workflow train.yml --limit 1
+curl -s -u "$U" "$S/model"; echo
+curl -s -u "$T" "$S/queue/stats"; echo
+```
+
+| The run's summary page says | Say |
+|---|---|
+| "A new version was registered and promoted" | "A new version passed the gate, beat the serving one on the same held-back reviews, and the server loaded it by itself." `/model` shows the new version, `trained` in the queue went up |
+| "registered but the champion stays" | "It passed the gate but did not beat the serving model on the same reviews, so nothing changed on the server. That is the gate doing its job." |
+| the step "Train on a rented GPU" failed after a few seconds, "No GPU had capacity" | "No GPU of the seven types was free, so nothing was rented and nothing was paid." Show step 6's recorded run |
+| "Too few new reviews" | "Fewer than 300 scored reviews were waiting, so no GPU was rented." |
+| "Nothing was registered" | "The new model failed the gate, so it was thrown away and the reviews went back into the queue." |
+
+What the last lines of a finished run look like, from the run of 18 Nov (the second and third are from the launcher):
+
+```
+Pod 3s96b7znrmvs12 created on NVIDIA GeForce RTX 3080 Ti (branch main, trainer args '--replay 0 --epochs 3')
+The pod's log could not be read. From the server: reviews marked trained 3099 -> 3519, serving model 1 -> 7
+Outcome: {'exit_code': 0, 'registered': True, 'version': '7', 'promoted': True}
+Trainer pods left behind: 0
+```
+
 ---
 
 ## If something goes wrong
@@ -297,4 +352,6 @@ So the claim is "level 2 in small, with these gaps", not "a level 2 system".
 | The model gives a wrong complaint | Say so. It is right about three times in four, and that is what the gate measures |
 | The drift check says "not enough labelled requests" | Say why (fewer than 100 for this version) and show the two tables in step 4 |
 | `gh` asks you to sign in | Open the links in the browser instead |
+| The live training has not finished | Say how far it is (the run's page shows the step it is in) and show step 6's recorded run for the ending |
+| The live training found no free GPU | It ends red within a minute and nothing was rented: say so, it is one of the guards. Show step 6's recorded run |
 | A password appears on screen | Never `cat` the files in `~/.config/skysat/`; use the variables from "Before the audience arrives" |
